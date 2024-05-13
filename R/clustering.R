@@ -41,6 +41,8 @@ setMethod(add_row_clustering,
                    k = NULL,
                    groups = NULL,
                    clust_dist = stats::dist,
+                   dist_method = 'euclidean',
+                   clust_method = 'complete',
                    colors = NULL,
                    show_colorbar = TRUE,
                    side = c("left","right"),
@@ -57,7 +59,7 @@ setMethod(add_row_clustering,
             mat <- get_data(hm)
             
             if (method == "hclust"){
-              dendro <- hclust(clust_dist(mat))
+              dendro <- hclust(clust_dist(mat, method = dist_method), method = clust_method)
               if (!is.null(k)){
                 groups <- stats::cutree(dendro, k = k)
                 if (is.null(colors)) colors <- pick_discrete_colors(groups, p)
@@ -154,7 +156,7 @@ setMethod(add_col_clustering,
             mat <- get_data(hm)
             
             if (method == "hclust"){
-              dendro <- hclust(clust_dist(t(mat)))
+              dendro <- hclust(clust_dist(t(mat), method = dist_method), method = clust_method)
               if (!is.null(k)){
                 groups <- stats::cutree(dendro, k = k)
                 if (is.null(colors)) colors <- pick_discrete_colors(groups, p)
