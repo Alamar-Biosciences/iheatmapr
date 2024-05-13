@@ -7,6 +7,8 @@
 #' if hclust
 #' @param clust_dist distance function to use for clustering if hierarchical 
 #' clustering
+#' @param dist_method distance methods passed to `stats::dist`
+#' @param clust_method clustering methods passed to `hclust`
 #' @param groups vector of group assignments
 #' @param colors colors to use for annotation of grouping, can be RColorBrewer 
 #' palette name or
@@ -105,6 +107,8 @@ setMethod(add_row_clustering,
 #' if hclust
 #' @param clust_dist distance function to use for clustering if hierarchical 
 #' clustering
+#' #' @param dist_method distance methods passed to `stats::dist`
+#' @param clust_method clustering methods passed to `hclust`
 #' @param groups vector of group assignments
 #' @param colors colors to use for annotation of grouping, can be RColorBrewer 
 #' palette name or
