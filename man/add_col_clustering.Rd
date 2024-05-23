@@ -12,6 +12,7 @@
   k = NULL,
   groups = NULL,
   clust_dist = stats::dist,
+  clust_method = "complete",
   colors = NULL,
   show_colorbar = TRUE,
   side = c("top", "bottom"),
@@ -36,6 +37,8 @@ if hclust}
 clustering
 #' @param dist_method distance methods passed to `stats::dist`}
 
+\item{clust_method}{clustering methods passed to `hclust`}
+
 \item{colors}{colors to use for annotation of grouping, can be RColorBrewer 
 palette name or
 vector of colors}
@@ -48,8 +51,6 @@ membership}
 \item{yname}{name of yaxis}
 
 \item{xname}{name of xaxis}
-
-\item{clust_method}{clustering methods passed to `hclust`}
 }
 \value{
 \code{\link{Iheatmap-class}} object, which can be printed to generate 

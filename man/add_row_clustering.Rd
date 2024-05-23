@@ -12,7 +12,6 @@
   k = NULL,
   groups = NULL,
   clust_dist = stats::dist,
-  dist_method = "euclidean",
   clust_method = "complete",
   colors = NULL,
   show_colorbar = TRUE,
@@ -36,8 +35,6 @@ if hclust}
 
 \item{clust_dist}{distance function to use for clustering if hierarchical 
 clustering}
-
-\item{dist_method}{distance methods passed to `stats::dist`}
 
 \item{clust_method}{clustering methods passed to `hclust`}
 
