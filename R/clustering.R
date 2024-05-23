@@ -59,7 +59,7 @@ setMethod(add_row_clustering,
             mat <- get_data(hm)
             
             if (method == "hclust"){
-              dendro <- hclust(clust_dist(mat, method = dist_method), method = clust_method)
+              dendro <- hclust(clust_dist(mat), method = clust_method)
               if (!is.null(k)){
                 groups <- stats::cutree(dendro, k = k)
                 if (is.null(colors)) colors <- pick_discrete_colors(groups, p)
