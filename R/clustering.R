@@ -7,7 +7,6 @@
 #' if hclust
 #' @param clust_dist distance function to use for clustering if hierarchical 
 #' clustering
-#' @param dist_method distance methods passed to `stats::dist`
 #' @param clust_method clustering methods passed to `hclust`
 #' @param groups vector of group assignments
 #' @param colors colors to use for annotation of grouping, can be RColorBrewer 
@@ -43,7 +42,6 @@ setMethod(add_row_clustering,
                    k = NULL,
                    groups = NULL,
                    clust_dist = stats::dist,
-                   dist_method = 'euclidean',
                    clust_method = 'complete',
                    colors = NULL,
                    show_colorbar = TRUE,
@@ -144,6 +142,7 @@ setMethod(add_col_clustering,
                    k = NULL,
                    groups = NULL,
                    clust_dist = stats::dist,
+                   clust_method = 'complete',
                    colors = NULL,
                    show_colorbar = TRUE,
                    side = c("top","bottom"),
@@ -160,7 +159,7 @@ setMethod(add_col_clustering,
             mat <- get_data(hm)
             
             if (method == "hclust"){
-              dendro <- hclust(clust_dist(t(mat), method = dist_method), method = clust_method)
+              dendro <- hclust(clust_dist(t(mat)), method = clust_method)
               if (!is.null(k)){
                 groups <- stats::cutree(dendro, k = k)
                 if (is.null(colors)) colors <- pick_discrete_colors(groups, p)
