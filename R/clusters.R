@@ -40,6 +40,7 @@ setMethod(add_row_clusters,
                    reorder = TRUE,
                    side = c("left","right"),
                    yname = current_yaxis(p),
+                   tooltip = setup_tooltip_options(),
                    ...){
             
             side <- match.arg(side)
@@ -52,6 +53,7 @@ setMethod(add_row_clusters,
                                 side = side,
                                 yname = yname, 
                                 show_title = FALSE,
+                                tooltip = tooltip,
                                 ...)
             validObject(p)
             p
@@ -100,6 +102,7 @@ setMethod(add_col_clusters,
                    reorder = TRUE,
                    side = c("top","bottom"),
                    xname = current_xaxis(p),
+                   tooltip = setup_tooltip_options(),
                    ...){
             
             side <- match.arg(side)
@@ -112,6 +115,7 @@ setMethod(add_col_clusters,
                                 side = side,
                                 xname = xname,
                                 show_title = FALSE,
+                                tooltip = tooltip,
                                 ...)
             
             validObject(p)
