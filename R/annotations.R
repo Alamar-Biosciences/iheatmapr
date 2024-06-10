@@ -42,6 +42,7 @@ setMethod(add_row_annotation,
                    buffer = 0.015,
                    inner_buffer = buffer / 2,
                    layout = list(),
+                   tooltip = setup_tooltip_options(),
                    show_colorbar = TRUE){
             
             side <- match.arg(side)
@@ -64,6 +65,7 @@ setMethod(add_row_annotation,
                                     buffer = if (i == 1) 
                                       buffer else inner_buffer,
                                     layout = layout,
+                                    tooltip = tooltip,
                                     show_title = TRUE)
               } else if (is.numeric(x[,i])){
                 if (!is.null(colors) && colnames(x)[i] %in% names(colors)){
@@ -82,6 +84,7 @@ setMethod(add_row_annotation,
                                     buffer = if (i == 1) 
                                       buffer else inner_buffer,
                                     layout = layout,
+                                    tooltip = tooltip,
                                     show_title = TRUE,
                                     show_colorbar = show_colorbar)
               } else{
@@ -135,6 +138,7 @@ setMethod(add_col_annotation,
                    buffer = 0.015,
                    inner_buffer = buffer / 2,
                    layout = list(),
+                   tooltip = setup_tooltip_options(),
                    show_colorbar = TRUE){
             
             side <- match.arg(side)
@@ -158,6 +162,7 @@ setMethod(add_col_annotation,
                                     buffer = if (i == 1)
                                       buffer else inner_buffer,
                                     layout = layout,
+                                    tooltip = tooltip,
                                     show_title = TRUE)
               } else if (is.numeric(x[,i])){
                 if (!is.null(colors) && colnames(x)[i] %in% names(colors)){
@@ -176,6 +181,7 @@ setMethod(add_col_annotation,
                                     buffer = if (i == 1)
                                       buffer else inner_buffer,
                                     layout = layout,
+                                    tooltip = tooltip,
                                     show_title = TRUE,
                                     show_colorbar = show_colorbar)
               } else{
