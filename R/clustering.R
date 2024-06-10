@@ -46,6 +46,7 @@ setMethod(add_row_clustering,
                    colors = NULL,
                    show_colorbar = TRUE,
                    side = c("left","right"),
+                   tooltip = setup_tooltip_options(),
                    xname = NULL,
                    yname = current_yaxis(p)){
             
@@ -146,6 +147,7 @@ setMethod(add_col_clustering,
                    colors = NULL,
                    show_colorbar = TRUE,
                    side = c("top","bottom"),
+                   tooltip = setup_tooltip_options(),
                    yname = NULL,
                    xname = current_xaxis(p)){
             
@@ -169,7 +171,8 @@ setMethod(add_col_clustering,
                                     colors = colors, 
                                     side = side, 
                                     show_colorbar = show_colorbar,
-                                    show_title = FALSE)
+                                    show_title = FALSE,
+                                    tooltip = tooltip)
               }
               p <- add_col_dendro(p, dendro, side = side)
             } else if (method == "kmeans"){
@@ -181,7 +184,8 @@ setMethod(add_col_clustering,
                                     name = name,
                                     colors = colors,
                                     side = side,
-                                    show_colorbar = show_colorbar)
+                                    show_colorbar = show_colorbar,
+                                    tooltip = tooltip)
             } else if (method == "groups"){
               if (is.null(colors)) colors <- pick_discrete_colors(groups, p)
               p <- add_col_clusters(p,
@@ -189,7 +193,8 @@ setMethod(add_col_clustering,
                                     name = name,
                                     colors = colors,
                                     side = side,
-                                    show_colorbar = show_colorbar)
+                                    show_colorbar = show_colorbar,
+                                    tooltip = tooltip)
             }
             validObject(p)
             p
