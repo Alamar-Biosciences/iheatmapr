@@ -70,7 +70,8 @@ setMethod(add_row_clustering,
                                     colors = colors, 
                                     side = side,
                                     show_colorbar = show_colorbar, 
-                                    show_title = FALSE)
+                                    show_title = FALSE,
+                                    tooltip = tooltip)
               }
               p <- add_row_dendro(p, dendro, side = side)
             } else if (method == "kmeans"){
@@ -82,7 +83,8 @@ setMethod(add_row_clustering,
                                     colors = colors, 
                                     name = name,
                                     side = side, 
-                                    show_colorbar = show_colorbar)
+                                    show_colorbar = show_colorbar,
+                                    tooltip = tooltip)
             } else if (method == "groups"){
               if (is.null(colors)) colors <- pick_discrete_colors(groups, p)
               p <- add_row_clusters(p,
@@ -90,7 +92,8 @@ setMethod(add_row_clustering,
                                     colors = colors, 
                                     name = name,
                                     side = side, 
-                                    show_colorbar = show_colorbar)
+                                    show_colorbar = show_colorbar,
+                                    tooltip = tooltip)
               
             }
             validObject(p)
