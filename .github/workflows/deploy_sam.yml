@@ -1,0 +1,49 @@
+name: Deploy SAM
+
+on:
+
+  pull_request:
+    types: closed
+    branches:
+      - 'main'
+      - 'RC*'
+      - '1.*'
+    paths-ignore:
+      - '**.md'
+      - '.gitignore'
+
+  workflow_dispatch:
+
+jobs:
+
+  deploy-sam:
+    if: |
+      (github.event.pull_request.merged == true && (contains(github.event.pull_request.title, 'deploy nas') || contains(github.event.pull_request.labels.*.name, 'Deploy NAS'))) || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Determine ref and workflow file
+        id: get_wf_name
+        run: |
+          if [ "${{ github.event.pull_request.base.ref }}" == "master" ]; then
+            echo "WORKFLOW_FILE=deploy_prod.yml" >> $GITHUB_OUTPUT
+          else
+            echo "WORKFLOW_FILE=deploy_dev.yml" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check details
+        run: |
+          echo "Deploying SAM"
+          echo "============="
+          echo "Base branch: ${{ github.event.pull_request.base.ref }}"
+          echo "Workflow file: ${{ steps.get_wf_name.outputs.WORKFLOW_FILE }}"
+
+      - name: Trigger SAM deployment
+        uses: convictional/trigger-workflow-and-wait@v1.6.5
+        with:
+          owner: Alamar-Biosciences
+          repo: Secondary-Analysis-Module
+          github_token: ${{ secrets.UTILITY_ACCESS_TOKEN }}
+          ref: ${{ github.event.pull_request.base.ref }}
+          workflow_file_name: ${{ steps.get_wf_name.outputs.WORKFLOW_FILE }}
+          wait_workflow: true
