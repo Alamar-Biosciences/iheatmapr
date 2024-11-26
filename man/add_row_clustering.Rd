@@ -16,6 +16,7 @@
   colors = NULL,
   show_colorbar = TRUE,
   side = c("left", "right"),
+  tooltip = setup_tooltip_options(),
   xname = NULL,
   yname = current_yaxis(p)
 )

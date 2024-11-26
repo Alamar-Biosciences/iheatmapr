@@ -14,6 +14,7 @@
   buffer = 0.015,
   inner_buffer = buffer/2,
   layout = list(),
+  tooltip = setup_tooltip_options(),
   show_colorbar = TRUE
 )
 }
