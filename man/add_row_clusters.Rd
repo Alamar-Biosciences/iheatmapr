@@ -12,6 +12,7 @@
   reorder = TRUE,
   side = c("left", "right"),
   yname = current_yaxis(p),
+  tooltip = setup_tooltip_options(),
   ...
 )
 }

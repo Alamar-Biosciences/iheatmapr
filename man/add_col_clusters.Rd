@@ -12,6 +12,7 @@
   reorder = TRUE,
   side = c("top", "bottom"),
   xname = current_xaxis(p),
+  tooltip = setup_tooltip_options(),
   ...
 )
 }
