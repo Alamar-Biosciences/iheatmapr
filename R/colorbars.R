@@ -133,24 +133,31 @@ setMethod("make_colorbar",
             w <- (n - 1) / n
 
             # Handle high-cardinality categorical variables to prevent overlap
+            # Configuration constants for legend label management
+            MAX_LABELS_THRESHOLD <- 10    # Show all labels if n <= this value
+            TARGET_LABEL_COUNT <- 8       # Approximate number of labels to show when sparse
+            MIN_ABBREV_LENGTH <- 4        # Minimum length for abbreviation
+            MAX_LABEL_LENGTH <- 10        # Max chars before truncation
+            TRUNCATE_LENGTH <- 8          # Length to truncate long labels to
+
             display_ticktext <- if (n == 1) {
               as.list(cb@ticktext)
-            } else if (n > 10) {
+            } else if (n > MAX_LABELS_THRESHOLD) {
               # Show subset of labels with spacing to prevent overlap
-              step <- ceiling(n / 8)  # Show approximately 8 evenly spaced labels
+              step <- ceiling(n / TARGET_LABEL_COUNT)
               show_indices <- seq(1, n, by = step)
               sparse_text <- rep("", n)
 
               # Try abbreviation first (on all labels to detect patterns)
               all_abbreviated <- as.character(abbreviate(cb@ticktext,
-                                                       minlength = 4,
+                                                       minlength = MIN_ABBREV_LENGTH,
                                                        use.classes = FALSE))
               selected_labels <- all_abbreviated[show_indices]
 
               # If abbreviation didn't shorten much, use substring instead
               for (i in seq_along(selected_labels)) {
-                if (nchar(selected_labels[i]) > 10) {
-                  selected_labels[i] <- substr(cb@ticktext[show_indices[i]], 1, 8)
+                if (nchar(selected_labels[i]) > MAX_LABEL_LENGTH) {
+                  selected_labels[i] <- substr(cb@ticktext[show_indices[i]], 1, TRUNCATE_LENGTH)
                 }
               }
 
