@@ -122,23 +122,52 @@ setMethod("make_colorbar",
           })
 
 setMethod("make_colorbar",
-          signature = c(cb = "DiscreteColorbar", 
+          signature = c(cb = "DiscreteColorbar",
                         grid = "IheatmapColorbarGrid"),
           function(cb, grid){
-            cbx <- grid@x_start + ((cb@position - 1) %/% grid@nrows) * 
+            cbx <- grid@x_start + ((cb@position - 1) %/% grid@nrows) *
               grid@x_spacing
-            cby <- grid@y_start - ((cb@position - 1) %% grid@nrows) * 
+            cby <- grid@y_start - ((cb@position - 1) %% grid@nrows) *
               grid@y_spacing
             n <- length(cb@ticktext)
-            w <- (n - 1) / n 
+            w <- (n - 1) / n
+
+            # Handle high-cardinality categorical variables to prevent overlap
+            display_ticktext <- if (n == 1) {
+              as.list(cb@ticktext)
+            } else if (n > 10) {
+              # Show subset of labels with spacing to prevent overlap
+              step <- ceiling(n / 8)  # Show approximately 8 evenly spaced labels
+              show_indices <- seq(1, n, by = step)
+              sparse_text <- rep("", n)
+
+              # Try abbreviation first (on all labels to detect patterns)
+              all_abbreviated <- as.character(abbreviate(cb@ticktext,
+                                                       minlength = 4,
+                                                       use.classes = FALSE))
+              selected_labels <- all_abbreviated[show_indices]
+
+              # If abbreviation didn't shorten much, use substring instead
+              for (i in seq_along(selected_labels)) {
+                if (nchar(selected_labels[i]) > 10) {
+                  selected_labels[i] <- substr(cb@ticktext[show_indices[i]], 1, 8)
+                }
+              }
+
+              sparse_text[show_indices] <- selected_labels
+              sparse_text
+            } else {
+              cb@ticktext
+            }
+
             out <- list(x = cbx,
                         y = cby,
                         len = grid@y_length,
                         title = cb@title,
                         ypad = 5,
                         thickness = 20,
-                        ticktext = if (n == 1) as.list(cb@ticktext) else cb@ticktext,
-                        tickvals = if (n == 1) as.list(1) else seq(1 + w * 0.5, 
+                        ticktext = display_ticktext,
+                        tickvals = if (n == 1) as.list(1) else seq(1 + w * 0.5,
                                        n - w * 0.5,
                                        length.out = n))
             out
