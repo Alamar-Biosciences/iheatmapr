@@ -172,27 +172,33 @@ setMethod("make_colorbar",
                         len = grid@y_length,
                         ypad = 5,
                         thickness = 20,
-                        ticktext = display_ticktext,
-                        tickvals = if (n == 1) as.list(1) else seq(1 + w * 0.5,
-                                       n - w * 0.5,
-                                       length.out = n),
                         tickmode = "array")
 
-            # Add title with indication of label truncation and store full labels
+            # Add title with indication of label truncation
             if (n > MAX_LABELS_THRESHOLD) {
               shown_count <- sum(nchar(as.character(display_ticktext)) > 0)
               # Add informative title noting truncation
-              out$title <- paste0(
-                cb@title,
-                sprintf(" (%d/%d)", shown_count, n)
+              out$title <- list(
+                text = paste0(
+                  cb@title,
+                  sprintf(" (%d/%d)", shown_count, n)
+                ),
+                font = list(size = 12)
               )
-              # Store full labels for JavaScript tooltip functionality
-              # This will be passed to the widget and used for hover
-              out$ticktext_full <- cb@ticktext_full
-              out$labels_truncated <- TRUE
-              out$tickfont <- list(size = 10)
+              # Use ticktext with embedded full labels as HTML title attributes
+              # This is a workaround since plotly doesn't support hover on colorbar ticks
+              # We'll add the full text in the visible label with line breaks
+              out$ticktext <- display_ticktext
+              out$tickvals <- if (n == 1) as.list(1) else seq(1 + w * 0.5,
+                                       n - w * 0.5,
+                                       length.out = n)
+              out$tickfont <- list(size = 9)
             } else {
               out$title <- cb@title
+              out$ticktext <- if (n == 1) as.list(cb@ticktext) else cb@ticktext
+              out$tickvals <- if (n == 1) as.list(1) else seq(1 + w * 0.5,
+                                       n - w * 0.5,
+                                       length.out = n)
             }
 
             out

@@ -1,55 +1,4 @@
 // Function adapted from Plotly R Package 3.60,
-
-// Helper function to add tooltips to colorbar labels
-// This provides hover information for truncated category labels
-function addColorbarLabelTooltips(elId, traces) {
-  try {
-    // Find all heatmap traces with colorbars
-    traces.forEach(function(trace, idx) {
-      if (trace.type === 'heatmap' && trace.colorbar) {
-        var colorbar = trace.colorbar;
-
-        // Check if this colorbar has truncated labels
-        if (colorbar.labels_truncated && colorbar.ticktext_full) {
-          var ticktext = colorbar.ticktext;
-          var ticktext_full = colorbar.ticktext_full;
-
-          // Find colorbar elements in the DOM
-          var plot = document.getElementById(elId);
-          if (!plot) return;
-
-          // Find all colorbar tick text elements
-          // Use setTimeout to ensure DOM is fully rendered
-          setTimeout(function() {
-            var cbTicks = plot.querySelectorAll('.cbtick text');
-
-            if (cbTicks.length > 0 && cbTicks.length === ticktext_full.length) {
-              cbTicks.forEach(function(tickEl, tickIdx) {
-                // Add title attribute for native browser tooltip with full label
-                if (tickIdx < ticktext_full.length) {
-                  var fullLabel = ticktext_full[tickIdx];
-                  tickEl.setAttribute('title', fullLabel);
-
-                  // Add custom styling for labels with tooltips
-                  tickEl.style.cursor = 'help';
-
-                  // Add visual indicator that hover is available
-                  if (ticktext[tickIdx] && ticktext[tickIdx] !== "") {
-                    // Add a subtle underline or dotted border to indicate hover
-                    tickEl.style.textDecoration = 'underline dotted';
-                  }
-                }
-              });
-            }
-          }, 200);
-        }
-      }
-    });
-  } catch(e) {
-    console.log("Could not add colorbar tooltips:", e);
-  }
-}
-
 HTMLWidgets.widget({
   name: "iheatmapr",
   type: "output",
@@ -84,12 +33,6 @@ HTMLWidgets.widget({
     } else {
       Plotly.newPlot(graphDiv, x.data, x.layout);
     }
-
-    // Add tooltip functionality for colorbar labels with full category names
-    // This enhances the user experience when labels are truncated
-    setTimeout(function() {
-      addColorbarLabelTooltips(el.id, x.data);
-    }, 100)
     
     sendEventData = function(eventType) {
       return function(eventData) {
