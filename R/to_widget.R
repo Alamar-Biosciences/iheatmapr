@@ -29,13 +29,12 @@ to_plotly_list <- function(p){
 
   # Add annotations for truncated colorbar labels
   # This provides a reference table for full category names
+  # Note: labels will be truncated in make_colorbar if > 10 categories
   truncated_colorbars <- lapply(p@colorbars, function(cb) {
     if (inherits(cb, "DiscreteColorbar") &&
-        length(cb@ticktext) > 10 &&
-        length(cb@ticktext_full) > 0) {
+        length(cb@ticktext_full) > 10) {
       return(list(
         title = cb@title,
-        ticktext = cb@ticktext,
         ticktext_full = cb@ticktext_full
       ))
     }
@@ -47,37 +46,34 @@ to_plotly_list <- function(p){
   if (length(truncated_colorbars) > 0) {
     for (i in seq_along(truncated_colorbars)) {
       cb_info <- truncated_colorbars[[i]]
-      # Create a text annotation showing the full labels
-      shown_indices <- which(nchar(cb_info$ticktext) > 0)
-      if (length(shown_indices) > 0 && length(shown_indices) < length(cb_info$ticktext_full)) {
-        # Add a note annotation
-        note_text <- paste0(
-          "<b>", cb_info$title, " - Full Labels:</b><br>",
-          paste(cb_info$ticktext_full, collapse = "<br>")
-        )
+      # Add a note annotation with all full labels
+      note_text <- paste0(
+        "<b>", cb_info$title, " - Full Labels:</b><br>",
+        paste(cb_info$ticktext_full, collapse = "<br>")
+      )
 
-        new_annotation <- list(
-          text = note_text,
-          showarrow = FALSE,
-          xref = "paper",
-          yref = "paper",
-          x = 1.02,
-          y = 0.5 - (i - 1) * 0.3,
-          xanchor = "left",
-          yanchor = "top",
-          align = "left",
-          font = list(size = 8),
-          bordercolor = "#c7c7c7",
-          borderwidth = 1,
-          borderpad = 4,
-          bgcolor = "#f9f9f9"
-        )
+      new_annotation <- list(
+        text = note_text,
+        showarrow = FALSE,
+        xref = "paper",
+        yref = "paper",
+        x = 1.05,
+        y = 0.98 - (i - 1) * 0.35,
+        xanchor = "left",
+        yanchor = "top",
+        align = "left",
+        font = list(size = 8),
+        bordercolor = "#c7c7c7",
+        borderwidth = 1,
+        borderpad = 4,
+        bgcolor = "#ffffff",
+        opacity = 0.9
+      )
 
-        if (is.null(layout_setting$annotations)) {
-          layout_setting$annotations <- list()
-        }
-        layout_setting$annotations <- c(layout_setting$annotations, list(new_annotation))
+      if (is.null(layout_setting$annotations)) {
+        layout_setting$annotations <- list()
       }
+      layout_setting$annotations <- c(layout_setting$annotations, list(new_annotation))
     }
   }
 
