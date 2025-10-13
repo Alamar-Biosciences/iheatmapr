@@ -170,13 +170,31 @@ setMethod("make_colorbar",
             out <- list(x = cbx,
                         y = cby,
                         len = grid@y_length,
-                        title = cb@title,
                         ypad = 5,
                         thickness = 20,
                         ticktext = display_ticktext,
                         tickvals = if (n == 1) as.list(1) else seq(1 + w * 0.5,
                                        n - w * 0.5,
-                                       length.out = n))
+                                       length.out = n),
+                        tickmode = "array")
+
+            # Add title with indication of label truncation and store full labels
+            if (n > MAX_LABELS_THRESHOLD) {
+              shown_count <- sum(nchar(as.character(display_ticktext)) > 0)
+              # Add informative title noting truncation
+              out$title <- paste0(
+                cb@title,
+                sprintf(" (%d/%d)", shown_count, n)
+              )
+              # Store full labels for JavaScript tooltip functionality
+              # This will be passed to the widget and used for hover
+              out$ticktext_full <- cb@ticktext_full
+              out$labels_truncated <- TRUE
+              out$tickfont <- list(size = 10)
+            } else {
+              out$title <- cb@title
+            }
+
             out
           })
 
@@ -241,13 +259,15 @@ setMethod("color_palette",c(x = "IheatmapColorbar"),
             x@colors
           })
 
-discrete_colorbar <- function(name, position, colors, ticktext, tickvals){
+discrete_colorbar <- function(name, position, colors, ticktext, tickvals,
+                              ticktext_full = ticktext){
   new("DiscreteColorbar",
       title = name,
       position = as.integer(position),
       colors = colors,
       ticktext = ticktext,
-      tickvals = tickvals)
+      tickvals = tickvals,
+      ticktext_full = ticktext_full)
 }
 
 continuous_colorbar <- function(name, position, colors, zmid, zmin, zmax){

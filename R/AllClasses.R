@@ -403,19 +403,21 @@ setClass("ContinuousColorbar",
          contains = "IheatmapColorbar")
 
 #' DiscreteColorbar
-#' 
+#'
 #' Class for storing discrete colorbar information
 #' @slot title title for colorbar
 #' @slot position integer indicating relative position of colorbar
-#' @slot colors name of color palette or vector of colors 
+#' @slot colors name of color palette or vector of colors
 #' @slot ticktext labels for categories
 #' @slot tickvals integer values for categories
+#' @slot ticktext_full full/original labels for categories (used for hover text)
 #' @aliases DiscreteColorbar
 #' @keywords internal
 #' @author Alicia Schep
 setClass("DiscreteColorbar",
          slots = list(ticktext = "character",
-                      tickvals = "integer"),
+                      tickvals = "integer",
+                      ticktext_full = "character"),
          contains = "IheatmapColorbar")
 
 #' IheatmapColorbars
