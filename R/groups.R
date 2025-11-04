@@ -1,8 +1,19 @@
+# Helper function to create discrete colorbar from groups
+create_groups_colorbar <- function(name, colorbar_position, colors, groups) {
+  color_levels <- levels(as.factor(groups))
+  discrete_colorbar(name,
+                    colorbar_position,
+                    colors,
+                    ticktext = color_levels,
+                    tickvals = seq_along(color_levels),
+                    ticktext_full = color_levels)
+}
+
 #' add_row_groups
 #'
 #' Adds annotation to heatmap indicating what group every row of main heatmap
 #' belongs to
-#' 
+#'
 #' @param p \code{\link{Iheatmap-class}} object
 #' @param groups vector of group names
 #' @param name name of colorbar
@@ -14,15 +25,15 @@
 #' @param side side of plot on which to groups annotation
 #' @param layout list of layout parameters for x axis
 #' @param size relative size of dendrogram (relative to the main heatmap)
-#' @param buffer amount of space to leave empty before this plot, relative to 
+#' @param buffer amount of space to leave empty before this plot, relative to
 #' size of first heatmap
 #' @param tooltip tooltip options, see \code{\link{setup_tooltip_options}}
 #' @param xname internal name of xaxis
 #' @param yname internal name of yaxis
 #' @param pname internal name of plot
-#' 
+#'
 #' @seealso \code{\link{iheatmap}}, \code{\link{add_col_groups}}
-#' @return \code{\link{Iheatmap-class}} object, which can be printed to generate 
+#' @return \code{\link{Iheatmap-class}} object, which can be printed to generate
 #' an interactive graphic
 #' @rdname add_row_groups
 #' @name add_row_groups
@@ -74,14 +85,8 @@ setMethod(add_row_groups,
                             text = groups,
                             tooltip = tooltip)
 
-            color_levels <- levels(as.factor(groups))
-            new_colorbar <-
-              discrete_colorbar(name,
-                                colorbar_position,
-                                colors,
-                                ticktext = color_levels,
-                                tickvals = seq_along(color_levels),
-                                ticktext_full = color_levels)
+            new_colorbar <- create_groups_colorbar(name, colorbar_position,
+                                                   colors, groups)
             
             p <- add_axis(p,
                           new_x,
@@ -176,14 +181,8 @@ setMethod(add_col_groups,
                             text = groups,
                             tooltip = tooltip)
 
-            color_levels <- levels(as.factor(groups))
-            new_colorbar <-
-              discrete_colorbar(name,
-                                colorbar_position,
-                                colors,
-                                ticktext = color_levels,
-                                tickvals = seq_along(color_levels),
-                                ticktext_full = color_levels)
+            new_colorbar <- create_groups_colorbar(name, colorbar_position,
+                                                   colors, groups)
             
             
             p <- add_axis(p,

@@ -420,6 +420,18 @@ setClass("DiscreteColorbar",
                       ticktext_full = "character"),
          contains = "IheatmapColorbar")
 
+setValidity("DiscreteColorbar", function(object) {
+  if (length(object@ticktext_full) > 0 &&
+      length(object@ticktext_full) != length(object@ticktext)) {
+    return("ticktext_full must have same length as ticktext")
+  }
+  if (length(object@ticktext_full) > 0 &&
+      length(object@ticktext_full) != length(object@tickvals)) {
+    return("ticktext_full must have same length as tickvals")
+  }
+  TRUE
+})
+
 #' IheatmapColorbars
 #' 
 #' Class for storing \code{\link{IheatmapColorbar}} objects

@@ -257,13 +257,17 @@ setMethod(add_colorbar, c(p = "Iheatmap", new_colorbar = "DiscreteColorbar"),
                                         new_colorbar@ticktext))>0){
                 warning(paste("Adding elements to group:", new_colorbar@title))
               }
-              colorbars(p)[[new_colorbar@title]]@ticktext <-
-                union(colorbars(p)[[new_colorbar@title]]@ticktext,
-                      new_colorbar@ticktext)
-              # Also merge ticktext_full
-              colorbars(p)[[new_colorbar@title]]@ticktext_full <-
-                union(colorbars(p)[[new_colorbar@title]]@ticktext_full,
-                      new_colorbar@ticktext_full)
+              # Merge ticktext and ticktext_full together to maintain alignment
+              old_df <- data.frame(text = colorbars(p)[[new_colorbar@title]]@ticktext,
+                                   full = colorbars(p)[[new_colorbar@title]]@ticktext_full,
+                                   stringsAsFactors = FALSE)
+              new_df <- data.frame(text = new_colorbar@ticktext,
+                                   full = new_colorbar@ticktext_full,
+                                   stringsAsFactors = FALSE)
+              merged <- unique(rbind(old_df, new_df))
+
+              colorbars(p)[[new_colorbar@title]]@ticktext <- merged$text
+              colorbars(p)[[new_colorbar@title]]@ticktext_full <- merged$full
             } else{
               colorbars(p)[[new_colorbar@title]] <- new_colorbar
             }

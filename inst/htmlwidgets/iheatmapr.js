@@ -195,6 +195,11 @@ HTMLWidgets.widget({
 
         // Process each colorbar group
         colorbars.forEach(function(colorbarGroup, colorbarIndex) {
+          // Skip if handlers already attached to this group
+          if (colorbarGroup.getAttribute('data-hover-handlers-attached') === 'true') {
+            return;
+          }
+
           // Get the corresponding trace (colorbars appear in same order as traces)
           if (colorbarIndex >= tracesWithColorbars.length) {
             return;
@@ -202,11 +207,16 @@ HTMLWidgets.widget({
 
           var trace = tracesWithColorbars[colorbarIndex];
 
-          if (!trace.colorbar.ticktext_full) {
+          if (!trace || !trace.colorbar || !trace.colorbar.ticktext_full) {
             return; // No full text available for this colorbar
           }
 
           var fullLabels = trace.colorbar.ticktext_full;
+
+          // Validate fullLabels is an array with elements
+          if (!Array.isArray(fullLabels) || fullLabels.length === 0) {
+            return;
+          }
 
           // Find the cbaxis group
           var cbaxisGroup = colorbarGroup.querySelector('.cbaxis');
@@ -216,6 +226,9 @@ HTMLWidgets.widget({
 
           // Find tick labels - they are text elements within the cbaxis group
           var tickLabels = cbaxisGroup.querySelectorAll('text');
+          if (!tickLabels || tickLabels.length === 0) {
+            return;
+          }
 
           // Find the cbfills group
           var cbfillsGroup = colorbarGroup.querySelector('.cbfills');
@@ -248,30 +261,61 @@ HTMLWidgets.widget({
           });
 
           // Add hover to all the color rectangles
-          // Since there are many small rects, we add handlers to all of them
-          // and map them to the appropriate label based on their index
+          // Map rectangles to labels based on vertical position using getBoundingClientRect
           var numLabels = fullLabels.length;
-          var rectsPerLabel = Math.floor(colorFills.length / numLabels);
 
-          colorFills.forEach(function(rect, rectIndex) {
-            // Calculate which label this rect corresponds to
-            var labelIndex = Math.floor(rectIndex / rectsPerLabel);
-            if (labelIndex >= numLabels) {
-              labelIndex = numLabels - 1; // Last label gets any remaining rects
-            }
-            var fullText = fullLabels[labelIndex];
-
-            if (fullText) {
-              rect.style.cursor = 'pointer';
-              rect.style.pointerEvents = 'all';
-              rect.addEventListener('mouseenter', function(e) {
-                showColorbarTooltip(rect, fullText);
+          // Get tick label screen positions
+          var tickPositions = [];
+          tickLabels.forEach(function(textElement, idx) {
+            try {
+              var rect = textElement.getBoundingClientRect();
+              tickPositions.push({
+                y: rect.top + rect.height / 2,
+                index: idx
               });
-              rect.addEventListener('mouseleave', function(e) {
-                hideColorbarTooltip();
-              });
+            } catch (e) {
+              // Skip if getBoundingClientRect fails
             }
           });
+
+          if (tickPositions.length > 0) {
+            colorFills.forEach(function(rect) {
+              try {
+                var rectBounds = rect.getBoundingClientRect();
+                var rectCenterY = rectBounds.top + rectBounds.height / 2;
+
+                // Find closest tick position
+                var closestIndex = tickPositions[0].index;
+                var minDistance = Math.abs(rectCenterY - tickPositions[0].y);
+
+                for (var i = 1; i < tickPositions.length; i++) {
+                  var distance = Math.abs(rectCenterY - tickPositions[i].y);
+                  if (distance < minDistance) {
+                    minDistance = distance;
+                    closestIndex = tickPositions[i].index;
+                  }
+                }
+
+                var fullText = fullLabels[closestIndex];
+
+                if (fullText) {
+                  rect.style.cursor = 'pointer';
+                  rect.style.pointerEvents = 'all';
+                  rect.addEventListener('mouseenter', function(e) {
+                    showColorbarTooltip(rect, fullText);
+                  });
+                  rect.addEventListener('mouseleave', function(e) {
+                    hideColorbarTooltip();
+                  });
+                }
+              } catch (e) {
+                // Skip rects that fail
+              }
+            });
+          }
+
+          // Mark this colorbar group as having handlers attached
+          colorbarGroup.setAttribute('data-hover-handlers-attached', 'true');
         });
       }
 
