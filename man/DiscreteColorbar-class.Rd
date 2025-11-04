@@ -20,6 +20,8 @@ Class for storing discrete colorbar information
 \item{\code{ticktext}}{labels for categories}
 
 \item{\code{tickvals}}{integer values for categories}
+
+\item{\code{ticktext_full}}{full text for categories (for hover tooltips)}
 }}
 
 \author{

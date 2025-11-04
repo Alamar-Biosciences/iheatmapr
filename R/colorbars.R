@@ -122,15 +122,16 @@ setMethod("make_colorbar",
           })
 
 setMethod("make_colorbar",
-          signature = c(cb = "DiscreteColorbar", 
+          signature = c(cb = "DiscreteColorbar",
                         grid = "IheatmapColorbarGrid"),
           function(cb, grid){
-            cbx <- grid@x_start + ((cb@position - 1) %/% grid@nrows) * 
+            cbx <- grid@x_start + ((cb@position - 1) %/% grid@nrows) *
               grid@x_spacing
-            cby <- grid@y_start - ((cb@position - 1) %% grid@nrows) * 
+            cby <- grid@y_start - ((cb@position - 1) %% grid@nrows) *
               grid@y_spacing
             n <- length(cb@ticktext)
-            w <- (n - 1) / n 
+            w <- (n - 1) / n
+
             out <- list(x = cbx,
                         y = cby,
                         len = grid@y_length,
@@ -138,9 +139,10 @@ setMethod("make_colorbar",
                         ypad = 5,
                         thickness = 20,
                         ticktext = if (n == 1) as.list(cb@ticktext) else cb@ticktext,
-                        tickvals = if (n == 1) as.list(1) else seq(1 + w * 0.5, 
+                        tickvals = if (n == 1) as.list(1) else seq(1 + w * 0.5,
                                        n - w * 0.5,
-                                       length.out = n))
+                                       length.out = n),
+                        ticktext_full = if (n == 1) as.list(cb@ticktext_full) else cb@ticktext_full)
             out
           })
 
@@ -205,13 +207,19 @@ setMethod("color_palette",c(x = "IheatmapColorbar"),
             x@colors
           })
 
-discrete_colorbar <- function(name, position, colors, ticktext, tickvals){
+discrete_colorbar <- function(name, position, colors, ticktext, tickvals, ticktext_full = NULL){
+  # If ticktext_full is not provided, use ticktext
+  if (is.null(ticktext_full)) {
+    ticktext_full <- ticktext
+  }
+
   new("DiscreteColorbar",
       title = name,
       position = as.integer(position),
       colors = colors,
       ticktext = ticktext,
-      tickvals = tickvals)
+      tickvals = tickvals,
+      ticktext_full = ticktext_full)
 }
 
 continuous_colorbar <- function(name, position, colors, zmid, zmin, zmax){
@@ -240,18 +248,22 @@ setMethod(add_colorbar, c(p = "Iheatmap", new_colorbar = "ContinuousColorbar"),
 setMethod(add_colorbar, c(p = "Iheatmap", new_colorbar = "DiscreteColorbar"),
           function(p, new_colorbar){
             if (new_colorbar@title %in% names(colorbars(p, what = "discrete"))){
-              if (length(intersect(colorbars(p)[[new_colorbar@title]]@ticktext, 
+              if (length(intersect(colorbars(p)[[new_colorbar@title]]@ticktext,
                                    new_colorbar@ticktext)) == 0){
                 stop(paste("No elements in common between groups with name:",
                            new_colorbar@title))
               } else if (length(setdiff(colorbars(p)
-                                        [[new_colorbar@title]]@ticktext, 
+                                        [[new_colorbar@title]]@ticktext,
                                         new_colorbar@ticktext))>0){
                 warning(paste("Adding elements to group:", new_colorbar@title))
               }
-              colorbars(p)[[new_colorbar@title]]@ticktext <- 
-                union(colorbars(p)[[new_colorbar@title]]@ticktext, 
+              colorbars(p)[[new_colorbar@title]]@ticktext <-
+                union(colorbars(p)[[new_colorbar@title]]@ticktext,
                       new_colorbar@ticktext)
+              # Also merge ticktext_full
+              colorbars(p)[[new_colorbar@title]]@ticktext_full <-
+                union(colorbars(p)[[new_colorbar@title]]@ticktext_full,
+                      new_colorbar@ticktext_full)
             } else{
               colorbars(p)[[new_colorbar@title]] <- new_colorbar
             }

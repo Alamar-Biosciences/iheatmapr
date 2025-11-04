@@ -73,14 +73,15 @@ setMethod(add_row_groups,
                             title = title,
                             text = groups,
                             tooltip = tooltip)
-            
+
             color_levels <- levels(as.factor(groups))
-            new_colorbar <- 
+            new_colorbar <-
               discrete_colorbar(name,
                                 colorbar_position,
                                 colors,
                                 ticktext = color_levels,
-                                tickvals = seq_along(color_levels))
+                                tickvals = seq_along(color_levels),
+                                ticktext_full = color_levels)
             
             p <- add_axis(p,
                           new_x,
@@ -174,14 +175,15 @@ setMethod(add_col_groups,
                             title = title,
                             text = groups,
                             tooltip = tooltip)
-            
+
             color_levels <- levels(as.factor(groups))
-            new_colorbar <- 
+            new_colorbar <-
               discrete_colorbar(name,
                                 colorbar_position,
                                 colors,
                                 ticktext = color_levels,
-                                tickvals = seq_along(color_levels))
+                                tickvals = seq_along(color_levels),
+                                ticktext_full = color_levels)
             
             
             p <- add_axis(p,
