@@ -103,10 +103,23 @@ tickvals_helper <- function(zmin, zmid, zmax) {
   out
 }
 
+# Helper function to determine max_length based on number of colorbars
+# NAS allows max 9 colorbars with 3 per column
+# Returns: 30 for <=3 colorbars, 24 for <=6, 12 for <=9
+get_colorbar_max_length <- function(num_colorbars) {
+  if (num_colorbars <= 3) {
+    return(30)
+  } else if (num_colorbars <= 6) {
+    return(24)
+  } else {
+    return(12)
+  }
+}
+
 # Helper function to add line breaks after . and _ to allow line wrapping
-# Only applies to titles longer than 12 characters to avoid unnecessary wrapping
-add_wrap_points <- function(text) {
-  if (nchar(text) > 12) {
+# Only applies to titles longer than max_length characters to avoid unnecessary wrapping
+add_wrap_points <- function(text, max_length = 12) {
+  if (nchar(text) > max_length) {
     # Insert <br> after . and _ to allow line wrapping in plotly SVG
     text <- gsub("\\.", ".<br>", text)
     text <- gsub("_", "_<br>", text)
