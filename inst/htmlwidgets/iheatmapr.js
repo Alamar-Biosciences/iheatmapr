@@ -75,15 +75,31 @@ HTMLWidgets.widget({
       };
     };
     
-    // send user input event data to shiny
-    if (shinyMode) {
-      // https://plot.ly/javascript/zoom-events/
-      graphDiv.on('plotly_relayout', function(d) {
+    // Re-attach colorbar hover handlers after plotly redraws
+    graphDiv.on('plotly_relayout', function(d) {
+      // Re-attach hover handlers after layout changes (zoom, pan, etc.)
+      addColorbarHoverHandlers(graphDiv, x.data);
+
+      if (shinyMode) {
         Shiny.onInputChange(
-          ".clientValue-" + "iheatmapr_relayout" + "-" + x.source, 
+          ".clientValue-" + "iheatmapr_relayout" + "-" + x.source,
           JSON.stringify(d)
         );
-      });
+      }
+    });
+
+    graphDiv.on('plotly_restyle', function(d) {
+      // Re-attach hover handlers after style changes
+      addColorbarHoverHandlers(graphDiv, x.data);
+    });
+
+    graphDiv.on('plotly_redraw', function() {
+      // Re-attach hover handlers after explicit redraws
+      addColorbarHoverHandlers(graphDiv, x.data);
+    });
+
+    // send user input event data to shiny
+    if (shinyMode) {
       graphDiv.on('plotly_hover', sendEventData('iheatmapr_hover'));
       graphDiv.on('plotly_click', sendEventData('iheatmapr_click'));
       graphDiv.on('plotly_selected', sendEventData('iheatmapr_selected'));
