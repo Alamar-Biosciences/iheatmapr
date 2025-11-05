@@ -1,10 +1,12 @@
 # Helper function to create discrete colorbar from groups
 create_groups_colorbar <- function(name, colorbar_position, colors, groups) {
   color_levels <- levels(as.factor(groups))
+  # Truncate labels longer than 12 characters for display
+  truncated_levels <- sapply(color_levels, truncate_label)
   discrete_colorbar(name,
                     colorbar_position,
                     colors,
-                    ticktext = color_levels,
+                    ticktext = truncated_levels,
                     tickvals = seq_along(color_levels),
                     ticktext_full = color_levels)
 }

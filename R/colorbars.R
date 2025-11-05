@@ -114,6 +114,16 @@ add_wrap_points <- function(text) {
   text
 }
 
+# Helper function to truncate text for colorbar labels
+# Truncates text longer than max_length characters and adds ".." to indicate truncation
+# Full text should be preserved in ticktext_full for hover tooltips
+truncate_label <- function(text, max_length = 12) {
+  if (nchar(text) > max_length) {
+    text <- paste0(substr(text, 1, max_length), "..")
+  }
+  text
+}
+
 setMethod("make_colorbar",
           signature = c(cb = "ContinuousColorbar",
                         grid = "IheatmapColorbarGrid"),
