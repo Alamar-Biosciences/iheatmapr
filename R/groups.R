@@ -2,7 +2,7 @@
 create_groups_colorbar <- function(name, colorbar_position, colors, groups) {
   color_levels <- levels(as.factor(groups))
   # Truncate labels longer than 12 characters for display
-  truncated_levels <- sapply(color_levels, truncate_label)
+  truncated_levels <- sapply(color_levels, truncate_label, USE.NAMES = FALSE)
   discrete_colorbar(name,
                     colorbar_position,
                     colors,
