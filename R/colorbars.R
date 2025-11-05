@@ -81,40 +81,51 @@ setup_colorbar_grid <- function(nrows = 3,
 #' @importFrom scales zero_range
 #' @importFrom plyr round_any
 tickvals_helper <- function(zmin, zmid, zmax) {
-  
+
   rng <- c(zmin, zmax)
-  
+
   span <- if (zero_range(rng)) abs(rng[1]) else diff(rng)
   if (span == 0){
     precision <- 1
   } else{
     precision <- 10 ^ floor(log10(span)-1)
   }
-  
+
   if (zmid > zmin && zmid < zmax){
-    out <- c(round_any(zmin,precision,ceiling), 
-             round_any(zmid,precision), 
+    out <- c(round_any(zmin,precision,ceiling),
+             round_any(zmid,precision),
              round_any(zmax,precision,floor))
   } else{
-    out <- c(round_any(zmin,precision,ceiling), 
+    out <- c(round_any(zmin,precision,ceiling),
              round_any(zmax,precision,floor))
   }
 
   out
 }
 
+# Helper function to add line breaks after . and _ to allow line wrapping
+# Only applies to titles longer than 12 characters to avoid unnecessary wrapping
+add_wrap_points <- function(text) {
+  if (nchar(text) > 12) {
+    # Insert <br> after . and _ to allow line wrapping in plotly SVG
+    text <- gsub("\\.", ".<br>", text)
+    text <- gsub("_", "_<br>", text)
+  }
+  text
+}
+
 setMethod("make_colorbar",
-          signature = c(cb = "ContinuousColorbar", 
+          signature = c(cb = "ContinuousColorbar",
                         grid = "IheatmapColorbarGrid"),
           function(cb, grid){
-            cbx <- grid@x_start + ((cb@position - 1) %/% grid@nrows) * 
+            cbx <- grid@x_start + ((cb@position - 1) %/% grid@nrows) *
               grid@x_spacing
-            cby <- grid@y_start - ((cb@position - 1) %% grid@nrows) * 
+            cby <- grid@y_start - ((cb@position - 1) %% grid@nrows) *
               grid@y_spacing
             out <- list(x = cbx,
                         y = cby,
                         len = grid@y_length,
-                        title = cb@title,
+                        title = add_wrap_points(cb@title),
                         ypad = 5,
                         thickness = 20,
                         tickvals = tickvals_helper(cb@zmin, cb@zmid, cb@zmax))
@@ -135,7 +146,7 @@ setMethod("make_colorbar",
             out <- list(x = cbx,
                         y = cby,
                         len = grid@y_length,
-                        title = cb@title,
+                        title = add_wrap_points(cb@title),
                         ypad = 5,
                         thickness = 20,
                         ticktext = if (n == 1) as.list(cb@ticktext) else cb@ticktext,

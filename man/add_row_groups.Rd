@@ -47,7 +47,7 @@
 
 \item{size}{relative size of dendrogram (relative to the main heatmap)}
 
-\item{buffer}{amount of space to leave empty before this plot, relative to 
+\item{buffer}{amount of space to leave empty before this plot, relative to
 size of first heatmap}
 
 \item{tooltip}{tooltip options, see \code{\link{setup_tooltip_options}}}
@@ -59,7 +59,7 @@ size of first heatmap}
 \item{pname}{internal name of plot}
 }
 \value{
-\code{\link{Iheatmap-class}} object, which can be printed to generate 
+\code{\link{Iheatmap-class}} object, which can be printed to generate
 an interactive graphic
 }
 \description{
