@@ -145,7 +145,13 @@ HTMLWidgets.widget({
       // Position tooltip near the element
       var bbox = element.getBoundingClientRect();
       tooltip.style.left = (bbox.right + 10) + 'px';
-      tooltip.style.top = (bbox.top + bbox.height/2 - tooltip.offsetHeight/2) + 'px';
+
+      // Calculate vertical position with viewport boundary checks
+      var top = bbox.top + bbox.height/2 - tooltip.offsetHeight/2;
+      var maxTop = window.innerHeight - tooltip.offsetHeight - 10;
+      if (top > maxTop) top = maxTop;
+      if (top < 10) top = 10;
+      tooltip.style.top = top + 'px';
     }
 
     function hideColorbarTooltip() {
@@ -339,6 +345,27 @@ HTMLWidgets.widget({
       tryAddHandlers();
     }
 
+  },
+
+  // Cleanup method called when widget is destroyed
+  destroy: function(el) {
+    var graphDiv = document.getElementById(el.id);
+    if (graphDiv) {
+      // Remove Plotly event listeners
+      try {
+        graphDiv.removeAllListeners('plotly_relayout');
+        graphDiv.removeAllListeners('plotly_restyle');
+        graphDiv.removeAllListeners('plotly_redraw');
+      } catch (e) {
+        // Ignore errors if listeners don't exist
+      }
+
+      // Remove any existing tooltip
+      var tooltip = document.querySelector('.colorbar-hover-tooltip');
+      if (tooltip) {
+        tooltip.remove();
+      }
+    }
   }
 
 });
