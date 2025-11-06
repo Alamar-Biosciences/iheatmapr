@@ -3,10 +3,10 @@ dendro_to_coords <- function(dendro,
 
   orientation <- match.arg(orientation)
 
-  # Suppress graphics device opening (ggdendro can trigger device creation)
-  old_device <- getOption("device")
-  options(device = function(...) pdf(file = nullfile()))
-  on.exit(options(device = old_device), add = TRUE)
+  # Prevent graphics device opening by using a null device
+  # ggdendro::dendro_data() triggers device creation - open null device first
+  pdf(NULL)
+  on.exit(dev.off(), add = TRUE)
 
   d <- ggdendro::dendro_data(dendro)$segments
   shapes <- vector("list", nrow(d))
