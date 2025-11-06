@@ -81,40 +81,53 @@ setup_colorbar_grid <- function(nrows = 3,
 #' @importFrom scales zero_range
 #' @importFrom plyr round_any
 tickvals_helper <- function(zmin, zmid, zmax) {
-  
+
   rng <- c(zmin, zmax)
-  
+
   span <- if (zero_range(rng)) abs(rng[1]) else diff(rng)
   if (span == 0){
     precision <- 1
   } else{
     precision <- 10 ^ floor(log10(span)-1)
   }
-  
+
   if (zmid > zmin && zmid < zmax){
-    out <- c(round_any(zmin,precision,ceiling), 
-             round_any(zmid,precision), 
+    out <- c(round_any(zmin,precision,ceiling),
+             round_any(zmid,precision),
              round_any(zmax,precision,floor))
   } else{
-    out <- c(round_any(zmin,precision,ceiling), 
+    out <- c(round_any(zmin,precision,ceiling),
              round_any(zmax,precision,floor))
   }
 
   out
 }
 
+# Helper function to add line breaks after . and _ to allow line wrapping
+# Only applies to titles longer than max_length characters to avoid unnecessary wrapping
+add_wrap_points <- function(text, max_length = 12) {
+  # Handle NA or empty values
+  if (is.na(text) || nchar(text) <= max_length) {
+    return(text)
+  }
+  # Insert <br> after . and _ to allow line wrapping in plotly SVG
+  text <- gsub("\\.", ".<br>", text)
+  text <- gsub("_", "_<br>", text)
+  text
+}
+
 setMethod("make_colorbar",
-          signature = c(cb = "ContinuousColorbar", 
+          signature = c(cb = "ContinuousColorbar",
                         grid = "IheatmapColorbarGrid"),
           function(cb, grid){
-            cbx <- grid@x_start + ((cb@position - 1) %/% grid@nrows) * 
+            cbx <- grid@x_start + ((cb@position - 1) %/% grid@nrows) *
               grid@x_spacing
-            cby <- grid@y_start - ((cb@position - 1) %% grid@nrows) * 
+            cby <- grid@y_start - ((cb@position - 1) %% grid@nrows) *
               grid@y_spacing
             out <- list(x = cbx,
                         y = cby,
                         len = grid@y_length,
-                        title = cb@title,
+                        title = add_wrap_points(cb@title),
                         ypad = 5,
                         thickness = 20,
                         tickvals = tickvals_helper(cb@zmin, cb@zmid, cb@zmax))
@@ -122,25 +135,27 @@ setMethod("make_colorbar",
           })
 
 setMethod("make_colorbar",
-          signature = c(cb = "DiscreteColorbar", 
+          signature = c(cb = "DiscreteColorbar",
                         grid = "IheatmapColorbarGrid"),
           function(cb, grid){
-            cbx <- grid@x_start + ((cb@position - 1) %/% grid@nrows) * 
+            cbx <- grid@x_start + ((cb@position - 1) %/% grid@nrows) *
               grid@x_spacing
-            cby <- grid@y_start - ((cb@position - 1) %% grid@nrows) * 
+            cby <- grid@y_start - ((cb@position - 1) %% grid@nrows) *
               grid@y_spacing
             n <- length(cb@ticktext)
-            w <- (n - 1) / n 
+            w <- (n - 1) / n
+
             out <- list(x = cbx,
                         y = cby,
                         len = grid@y_length,
-                        title = cb@title,
+                        title = add_wrap_points(cb@title),
                         ypad = 5,
                         thickness = 20,
                         ticktext = if (n == 1) as.list(cb@ticktext) else cb@ticktext,
-                        tickvals = if (n == 1) as.list(1) else seq(1 + w * 0.5, 
+                        tickvals = if (n == 1) as.list(1) else seq(1 + w * 0.5,
                                        n - w * 0.5,
-                                       length.out = n))
+                                       length.out = n),
+                        ticktext_full = if (n == 1) as.list(cb@ticktext_full) else cb@ticktext_full)
             out
           })
 
@@ -205,13 +220,19 @@ setMethod("color_palette",c(x = "IheatmapColorbar"),
             x@colors
           })
 
-discrete_colorbar <- function(name, position, colors, ticktext, tickvals){
+discrete_colorbar <- function(name, position, colors, ticktext, tickvals, ticktext_full = NULL){
+  # If ticktext_full is not provided, use ticktext
+  if (is.null(ticktext_full)) {
+    ticktext_full <- ticktext
+  }
+
   new("DiscreteColorbar",
       title = name,
       position = as.integer(position),
       colors = colors,
       ticktext = ticktext,
-      tickvals = tickvals)
+      tickvals = tickvals,
+      ticktext_full = ticktext_full)
 }
 
 continuous_colorbar <- function(name, position, colors, zmid, zmin, zmax){
@@ -240,18 +261,27 @@ setMethod(add_colorbar, c(p = "Iheatmap", new_colorbar = "ContinuousColorbar"),
 setMethod(add_colorbar, c(p = "Iheatmap", new_colorbar = "DiscreteColorbar"),
           function(p, new_colorbar){
             if (new_colorbar@title %in% names(colorbars(p, what = "discrete"))){
-              if (length(intersect(colorbars(p)[[new_colorbar@title]]@ticktext, 
+              if (length(intersect(colorbars(p)[[new_colorbar@title]]@ticktext,
                                    new_colorbar@ticktext)) == 0){
                 stop(paste("No elements in common between groups with name:",
                            new_colorbar@title))
               } else if (length(setdiff(colorbars(p)
-                                        [[new_colorbar@title]]@ticktext, 
+                                        [[new_colorbar@title]]@ticktext,
                                         new_colorbar@ticktext))>0){
                 warning(paste("Adding elements to group:", new_colorbar@title))
               }
-              colorbars(p)[[new_colorbar@title]]@ticktext <- 
-                union(colorbars(p)[[new_colorbar@title]]@ticktext, 
-                      new_colorbar@ticktext)
+              # Merge ticktext and ticktext_full together to maintain alignment
+              old_df <- data.frame(text = colorbars(p)[[new_colorbar@title]]@ticktext,
+                                   full = colorbars(p)[[new_colorbar@title]]@ticktext_full,
+                                   stringsAsFactors = FALSE)
+              new_df <- data.frame(text = new_colorbar@ticktext,
+                                   full = new_colorbar@ticktext_full,
+                                   stringsAsFactors = FALSE)
+              merged <- unique(rbind(old_df, new_df))
+
+              colorbars(p)[[new_colorbar@title]]@ticktext <- merged$text
+              colorbars(p)[[new_colorbar@title]]@ticktext_full <- merged$full
+              colorbars(p)[[new_colorbar@title]]@tickvals <- as.integer(seq_along(merged$text))
             } else{
               colorbars(p)[[new_colorbar@title]] <- new_colorbar
             }

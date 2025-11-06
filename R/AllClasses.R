@@ -403,20 +403,34 @@ setClass("ContinuousColorbar",
          contains = "IheatmapColorbar")
 
 #' DiscreteColorbar
-#' 
+#'
 #' Class for storing discrete colorbar information
 #' @slot title title for colorbar
 #' @slot position integer indicating relative position of colorbar
-#' @slot colors name of color palette or vector of colors 
+#' @slot colors name of color palette or vector of colors
 #' @slot ticktext labels for categories
 #' @slot tickvals integer values for categories
+#' @slot ticktext_full full text for categories (for hover tooltips)
 #' @aliases DiscreteColorbar
 #' @keywords internal
 #' @author Alicia Schep
 setClass("DiscreteColorbar",
          slots = list(ticktext = "character",
-                      tickvals = "integer"),
+                      tickvals = "integer",
+                      ticktext_full = "character"),
          contains = "IheatmapColorbar")
+
+setValidity("DiscreteColorbar", function(object) {
+  if (length(object@ticktext_full) > 0 &&
+      length(object@ticktext_full) != length(object@ticktext)) {
+    return("ticktext_full must have same length as ticktext")
+  }
+  if (length(object@ticktext_full) > 0 &&
+      length(object@ticktext_full) != length(object@tickvals)) {
+    return("ticktext_full must have same length as tickvals")
+  }
+  TRUE
+})
 
 #' IheatmapColorbars
 #' 
