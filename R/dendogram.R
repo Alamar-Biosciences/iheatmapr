@@ -1,7 +1,13 @@
-dendro_to_coords <- function(dendro, 
+dendro_to_coords <- function(dendro,
                              orientation = c("left","bottom","right","top")){
 
   orientation <- match.arg(orientation)
+
+  # Prevent graphics device opening by using a null device
+  # ggdendro::dendro_data() triggers device creation - open null device first
+  pdf(NULL)
+  on.exit(dev.off(), add = TRUE)
+
   d <- ggdendro::dendro_data(dendro)$segments
   shapes <- vector("list", nrow(d))
 
