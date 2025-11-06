@@ -39,7 +39,7 @@ HTMLWidgets.widget({
       // Add colorbar hover handlers after re-rendering
       addColorbarHoverHandlers(graphDiv, x.data);
     }
-    
+
     sendEventData = function(eventType) {
       return function(eventData) {
         if (eventData === undefined || !eventData.hasOwnProperty("points")) {
@@ -47,8 +47,8 @@ HTMLWidgets.widget({
         }
         var d = eventData.points.map(function(pt) {
           var obj = {
-                curveNumber: pt.curveNumber, 
-                pointNumber: pt.pointNumber, 
+                curveNumber: pt.curveNumber,
+                pointNumber: pt.pointNumber,
                 x: pt.x,
                 y: pt.y
           };
@@ -66,19 +66,40 @@ HTMLWidgets.widget({
           };
           attachKey("z");
           attachKey("key");
-          return obj; 
+          return obj;
         });
         Shiny.onInputChange(
-          ".clientValue-" + eventType + "-" + x.source, 
+          ".clientValue-" + eventType + "-" + x.source,
           JSON.stringify(d)
         );
       };
     };
-    
+
+    // Debounce timeout to prevent infinite event loops when re-attaching handlers.
+    // Store on graphDiv so destroy method can clear it.
+    graphDiv._colorbarHandlerTimeout = null;
+
+    // Debounced function to re-attach colorbar hover handlers
+    var scheduleColorbarHandlers = function() {
+      if (graphDiv._colorbarHandlerTimeout) {
+        clearTimeout(graphDiv._colorbarHandlerTimeout);
+      }
+
+      // Delay handler re-attachment to let DOM settle and prevent event loops
+      graphDiv._colorbarHandlerTimeout = setTimeout(function() {
+        try {
+          addColorbarHoverHandlers(graphDiv, x.data);
+        } catch (error) {
+          console.error('Error attaching colorbar hover handlers:', error);
+        } finally {
+          graphDiv._colorbarHandlerTimeout = null;
+        }
+      }, 100);
+    };
+
     // Re-attach colorbar hover handlers after plotly redraws
     graphDiv.on('plotly_relayout', function(d) {
-      // Re-attach hover handlers after layout changes (zoom, pan, etc.)
-      addColorbarHoverHandlers(graphDiv, x.data);
+      scheduleColorbarHandlers();
 
       if (shinyMode) {
         Shiny.onInputChange(
@@ -89,13 +110,11 @@ HTMLWidgets.widget({
     });
 
     graphDiv.on('plotly_restyle', function(d) {
-      // Re-attach hover handlers after style changes
-      addColorbarHoverHandlers(graphDiv, x.data);
+      scheduleColorbarHandlers();
     });
 
     graphDiv.on('plotly_redraw', function() {
-      // Re-attach hover handlers after explicit redraws
-      addColorbarHoverHandlers(graphDiv, x.data);
+      scheduleColorbarHandlers();
     });
 
     // send user input event data to shiny
@@ -351,6 +370,12 @@ HTMLWidgets.widget({
   destroy: function(el) {
     var graphDiv = document.getElementById(el.id);
     if (graphDiv) {
+      // Clear any pending colorbar handler timeout
+      if (graphDiv._colorbarHandlerTimeout) {
+        clearTimeout(graphDiv._colorbarHandlerTimeout);
+        graphDiv._colorbarHandlerTimeout = null;
+      }
+
       // Remove Plotly event listeners
       try {
         graphDiv.removeAllListeners('plotly_relayout');
