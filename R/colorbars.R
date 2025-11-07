@@ -124,13 +124,16 @@ setMethod("make_colorbar",
               grid@x_spacing
             cby <- grid@y_start - ((cb@position - 1) %% grid@nrows) *
               grid@y_spacing
+            tickvals <- tickvals_helper(cb@zmin, cb@zmid, cb@zmax)
             out <- list(x = cbx,
                         y = cby,
                         len = grid@y_length,
                         title = add_wrap_points(cb@title),
                         ypad = 5,
                         thickness = 20,
-                        tickvals = tickvals_helper(cb@zmin, cb@zmid, cb@zmax))
+                        tickvals = tickvals,
+                        ticktext = as.character(tickvals),
+                        tickmode = "array")
             out
           })
 
