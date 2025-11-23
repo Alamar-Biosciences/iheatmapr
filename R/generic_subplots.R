@@ -11,15 +11,15 @@ setMethod("make_trace", signature = c(x = "RowPlot"),
                         paste("Value:", xvals), sep = "<br>")
             
             trace <- modifyList(x@additional,
-                                list(y = axis_values(ya),
-                                     x = xvals,
-                                     text = txt, 
+                                list(y = I(axis_values(ya)),
+                                     x = I(xvals),
+                                     text = I(txt),
                                      hoverinfo = "text",
                                      xaxis = id(xa),
                                      yaxis = id(ya),
                                      showlegend = x@showlegend,
                                      type = x@type,
-                                     name = if (!is.na(x@name)) 
+                                     name = if (!is.na(x@name))
                                        x@name else NULL))
             return(trace)
           })
@@ -38,15 +38,15 @@ setMethod("make_trace", signature = c(x = "ColumnPlot"),
                         paste("Value:", yvals), sep = "<br>")
             
             trace <- modifyList(x@additional,
-                                list(x = axis_values(xa),
-                                     y = yvals,
-                                     text = txt, 
+                                list(x = I(axis_values(xa)),
+                                     y = I(yvals),
+                                     text = I(txt),
                                      hoverinfo = "text",
                                      xaxis = id(xa),
                                      yaxis = id(ya),
                                      showlegend = x@showlegend,
                                      type = x@type,
-                                     name = if (!is.na(x@name)) 
+                                     name = if (!is.na(x@name))
                                        x@name else NULL))
             return(trace)
           })
