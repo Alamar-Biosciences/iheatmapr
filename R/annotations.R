@@ -71,17 +71,17 @@ setMethod(add_row_annotation,
                 if (!is.null(colors) && colnames(x)[i] %in% names(colors)){
                   tmp_colors <- colors[[colnames(x)[i]]]
                 } else{
-                  tmp_colors <- pick_continuous_colors(zmid = 0, 
-                                                       zmin = min(x[,i]),
-                                                       zmax = max(x[,i]), p)
+                  tmp_colors <- pick_continuous_colors(zmid = 0,
+                                                       zmin = min(x[,i], na.rm = TRUE),
+                                                       zmax = max(x[,i], na.rm = TRUE), p)
                 }
-                p <- add_row_signal(p, 
+                p <- add_row_signal(p,
                                     x[,i],
                                     name = colnames(x)[i],
                                     colors = tmp_colors,
                                     side = side,
                                     size = size,
-                                    buffer = if (i == 1) 
+                                    buffer = if (i == 1)
                                       buffer else inner_buffer,
                                     layout = layout,
                                     tooltip = tooltip,
@@ -168,11 +168,11 @@ setMethod(add_col_annotation,
                 if (!is.null(colors) && colnames(x)[i] %in% names(colors)){
                   tmp_colors <- colors[[colnames(x)[i]]]
                 } else{
-                  tmp_colors <- pick_continuous_colors(zmid = 0, 
-                                                       zmin = min(x[,i]),
-                                                       zmax = max(x[,i]), p)
+                  tmp_colors <- pick_continuous_colors(zmid = 0,
+                                                       zmin = min(x[,i], na.rm = TRUE),
+                                                       zmax = max(x[,i], na.rm = TRUE), p)
                 }
-                p <- add_col_signal(p, 
+                p <- add_col_signal(p,
                                     x[,i],
                                     name = colnames(x)[i],
                                     colors = tmp_colors,

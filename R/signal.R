@@ -19,11 +19,11 @@ setMethod("make_trace", signature = c(x = "RowAnnotation"),
             
             z <- mat[axis_order(ya), 1, drop = FALSE]
             
-            out <- list(z = z,
-                        y = axis_values(ya),
+            out <- list(z = I(z),
+                        y = I(axis_values(ya)),
                         x = c(1),
                         type= "heatmap",
-                        text = txt,
+                        text = I(txt),
                         colorscale = colorscale,
                         xaxis = id(xa),
                         yaxis = id(ya),
@@ -61,12 +61,12 @@ setMethod("make_trace", signature = c(x = "ColumnAnnotation"),
             
             
             z <- mat[1, axis_order(xa), drop = FALSE]
-            
-            out <- list(z = z,
-                        x = axis_values(xa),
+
+            out <- list(z = I(z),
+                        x = I(axis_values(xa)),
                         y = c(1),
                         type= "heatmap",
-                        text = txt,
+                        text = I(txt),
                         colorscale = colorscale,
                         xaxis = id(xa),
                         yaxis = id(ya),
@@ -179,7 +179,7 @@ setMethod(add_row_signal, c(p = "Iheatmap", signal = "ANY"),
                             xaxis = xname,
                             yaxis = yname,
                             colorbar = name,
-                            show_colorbar = TRUE,
+                            show_colorbar = show_colorbar,
                             data = signal,
                             title = title,
                             text = text,
@@ -280,7 +280,7 @@ setMethod(add_col_signal, c(p = "Iheatmap", signal = "ANY"),
                             xaxis = xname,
                             yaxis = yname,
                             colorbar = name,
-                            show_colorbar = TRUE,
+                            show_colorbar = show_colorbar,
                             data = signal,
                             title = title,
                             text = text,
@@ -292,7 +292,7 @@ setMethod(add_col_signal, c(p = "Iheatmap", signal = "ANY"),
                                                 zmid,
                                                 zmin,
                                                 zmax)
-            
+
             p <- add_axis(p,
                           new_y,
                           yname = yname,
