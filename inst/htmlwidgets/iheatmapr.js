@@ -47,6 +47,120 @@ function decodeBinaryTraces(data) {
   return data;
 }
 
+// Generate tooltip text on-demand for lazy tooltips
+function generateLazyTooltip(trace, rowIdx, colIdx) {
+  var lt = trace.lazy_tooltip;
+  if (!lt) return null;
+
+  var parts = [];
+
+  if (lt.show_row && lt.row_labels && lt.row_labels[rowIdx] !== undefined) {
+    parts.push(lt.prepend_row + lt.row_labels[rowIdx]);
+  }
+
+  if (lt.show_col && lt.col_labels && lt.col_labels[colIdx] !== undefined) {
+    parts.push(lt.prepend_col + lt.col_labels[colIdx]);
+  }
+
+  if (lt.show_value && lt.values && lt.values[rowIdx] && lt.values[rowIdx][colIdx] !== undefined) {
+    parts.push(lt.prepend_value + lt.values[rowIdx][colIdx]);
+  }
+
+  return parts.join('<br>');
+}
+
+// Create and show a custom tooltip
+function showLazyTooltip(x, y, text) {
+  // Remove any existing lazy tooltip
+  hideLazyTooltip();
+
+  var tooltip = document.createElement('div');
+  tooltip.className = 'lazy-hover-tooltip';
+  tooltip.innerHTML = text;
+  tooltip.style.position = 'fixed';
+  tooltip.style.left = (x + 15) + 'px';
+  tooltip.style.top = (y + 15) + 'px';
+  tooltip.style.backgroundColor = 'rgba(0, 0, 0, 0.85)';
+  tooltip.style.color = 'white';
+  tooltip.style.padding = '8px 12px';
+  tooltip.style.borderRadius = '4px';
+  tooltip.style.fontSize = '12px';
+  tooltip.style.fontFamily = 'Arial, sans-serif';
+  tooltip.style.pointerEvents = 'none';
+  tooltip.style.zIndex = '10001';
+  tooltip.style.whiteSpace = 'nowrap';
+  tooltip.style.boxShadow = '0 2px 8px rgba(0,0,0,0.3)';
+
+  document.body.appendChild(tooltip);
+
+  // Adjust position if tooltip goes off screen
+  var rect = tooltip.getBoundingClientRect();
+  if (rect.right > window.innerWidth) {
+    tooltip.style.left = (x - rect.width - 10) + 'px';
+  }
+  if (rect.bottom > window.innerHeight) {
+    tooltip.style.top = (y - rect.height - 10) + 'px';
+  }
+}
+
+function hideLazyTooltip() {
+  var existing = document.querySelector('.lazy-hover-tooltip');
+  if (existing) {
+    existing.remove();
+  }
+}
+
+// Set up lazy tooltip hover handlers for a graph
+function setupLazyTooltipHandlers(graphDiv, data) {
+  // Check if any trace uses lazy tooltips
+  var hasLazyTooltips = data.some(function(trace) {
+    return trace.lazy_tooltip !== undefined;
+  });
+
+  if (!hasLazyTooltips) return;
+
+  // Track mouse position for tooltip placement
+  var mouseX = 0, mouseY = 0;
+  graphDiv.addEventListener('mousemove', function(e) {
+    mouseX = e.clientX;
+    mouseY = e.clientY;
+  });
+
+  // Handle hover events
+  graphDiv.on('plotly_hover', function(eventData) {
+    if (!eventData || !eventData.points || eventData.points.length === 0) return;
+
+    var pt = eventData.points[0];
+    var trace = data[pt.curveNumber];
+
+    if (trace && trace.lazy_tooltip) {
+      var rowIdx, colIdx;
+
+      // pointNumber can be [row, col] for heatmaps or just a number
+      if (Array.isArray(pt.pointNumber)) {
+        rowIdx = pt.pointNumber[0];
+        colIdx = pt.pointNumber[1];
+      } else if (pt.pointIndex !== undefined) {
+        if (Array.isArray(pt.pointIndex)) {
+          rowIdx = pt.pointIndex[0];
+          colIdx = pt.pointIndex[1];
+        }
+      }
+
+      if (rowIdx !== undefined && colIdx !== undefined) {
+        var tooltipText = generateLazyTooltip(trace, rowIdx, colIdx);
+        if (tooltipText) {
+          showLazyTooltip(mouseX, mouseY, tooltipText);
+        }
+      }
+    }
+  });
+
+  graphDiv.on('plotly_unhover', function() {
+    hideLazyTooltip();
+  });
+}
+
 HTMLWidgets.widget({
   name: "iheatmapr",
   type: "output",
@@ -84,11 +198,17 @@ HTMLWidgets.widget({
 
       // Add colorbar hover handlers after rendering
       addColorbarHoverHandlers(graphDiv, x.data);
+
+      // Set up lazy tooltip handlers for on-demand tooltip generation
+      setupLazyTooltipHandlers(graphDiv, x.data);
     } else {
       Plotly.newPlot(graphDiv, x.data, x.layout);
 
       // Add colorbar hover handlers after re-rendering
       addColorbarHoverHandlers(graphDiv, x.data);
+
+      // Set up lazy tooltip handlers for on-demand tooltip generation
+      setupLazyTooltipHandlers(graphDiv, x.data);
     }
 
     sendEventData = function(eventType) {
@@ -436,10 +556,15 @@ HTMLWidgets.widget({
         // Ignore errors if listeners don't exist
       }
 
-      // Remove any existing tooltip
+      // Remove any existing tooltips
       var tooltip = document.querySelector('.colorbar-hover-tooltip');
       if (tooltip) {
         tooltip.remove();
+      }
+
+      var lazyTooltip = document.querySelector('.lazy-hover-tooltip');
+      if (lazyTooltip) {
+        lazyTooltip.remove();
       }
     }
   }
