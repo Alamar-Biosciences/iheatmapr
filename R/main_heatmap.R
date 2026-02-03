@@ -1,3 +1,11 @@
+# Check if values are sequential integers starting from 1 (e.g., 1:n)
+# Used to optimize JSON by storing just the length instead of full array
+is_sequential_integers <- function(x) {
+  if (!is.numeric(x) || length(x) == 0) return(FALSE)
+  n <- length(x)
+  identical(as.numeric(x), as.numeric(seq_len(n)))
+}
+
 new_plots <- function(object,
                       name){
   out <- new("IheatmapPlots")
@@ -495,11 +503,15 @@ setMethod("make_trace", signature = c(x = "MainHeatmap"),
             data_mat <- get_data(x)
             colorscale <- colorscale(cb, data_mat)
 
+            # Use implicit coordinates if they're just 1:n (saves space in JSON)
+            x_vals <- axis_values(xa)
+            y_vals <- axis_values(ya)
+            x_implicit <- is_sequential_integers(x_vals)
+            y_implicit <- is_sequential_integers(y_vals)
+
             out <- list(z = I(data_mat[axis_order(ya),
                                         axis_order(xa),
                                         drop = FALSE]),
-                        x = I(axis_values(xa)),
-                        y = I(axis_values(ya)),
                         type="heatmap",
                         colorscale = colorscale,
                         xaxis = id(xa),
@@ -510,12 +522,24 @@ setMethod("make_trace", signature = c(x = "MainHeatmap"),
                         colorbar = make_colorbar(cb, colorbar_grid),
                         hoverinfo = "none")  # Disable Plotly's built-in hover
 
+            # Add x/y coordinates - use implicit length if sequential integers
+            if (x_implicit) {
+              out$x_implicit <- length(x_vals)
+            } else {
+              out$x <- I(x_vals)
+            }
+            if (y_implicit) {
+              out$y_implicit <- length(y_vals)
+            } else {
+              out$y <- I(y_vals)
+            }
+
             # Always use lazy tooltip generation - pass metadata for on-demand
             # tooltip construction in JavaScript instead of pre-computing all text
+            # Note: values are read from z matrix in JS, not stored here (saves ~60% space)
             out$lazy_tooltip <- list(
               row_labels = I(axis_text(ya)[axis_order(ya)]),
               col_labels = I(axis_text(xa)[axis_order(xa)]),
-              values = I(x@text[axis_order(ya), axis_order(xa), drop = FALSE]),
               prepend_row = x@tooltip@prepend_row,
               prepend_col = x@tooltip@prepend_col,
               prepend_value = x@tooltip@prepend_value,

@@ -118,11 +118,25 @@ to_plotly_list <- function(p){
                           yaxes = yaxes(p),
                           colorbars = p@colorbars,
                           colorbar_grid = p@colorbar_grid))
-  shapes <- unlist(unname(lapply(p@shapes,
+  all_shapes <- unname(lapply(p@shapes,
                                  make_shapes,
                                  xaxes = xaxes(p),
-                                 yaxes = yaxes(p))),
-                   recursive = FALSE, use.names = FALSE)
+                                 yaxes = yaxes(p)))
+
+  # Separate compact dendrograms from regular shapes
+  compact_dendros <- list()
+  regular_shapes <- list()
+
+  for (shape_list in all_shapes) {
+    if (!is.null(shape_list$dendro_compact)) {
+      # This is a compact dendrogram
+      compact_dendros <- c(compact_dendros, list(shape_list$dendro_compact))
+    } else if (is.list(shape_list)) {
+      # Regular shapes (list of shape objects)
+      regular_shapes <- c(regular_shapes, shape_list)
+    }
+  }
+
   annotations <- unlist(unname(lapply(p@annotations,
                                       make_annotations,
                                       xaxes = xaxes(p),
@@ -131,8 +145,8 @@ to_plotly_list <- function(p){
   layout_setting <- c(get_layout(p@xaxes),
                       get_layout(p@yaxes),
                       p@layout)
-  if (length(shapes) && !is.null(unlist(shapes))){
-    layout_setting$shapes <- shapes
+  if (length(regular_shapes) && !is.null(unlist(regular_shapes))){
+    layout_setting$shapes <- regular_shapes
   }
   if (length(annotations) && !is.null(unlist(annotations))){
     layout_setting$annotations <- annotations
@@ -150,6 +164,11 @@ to_plotly_list <- function(p){
               config = list(modeBarButtonsToRemove =
                               c("sendDataToCloud",
                                 "autoScale2d")))
+
+  # Add compact dendrograms if present (decoded in JS)
+  if (length(compact_dendros) > 0) {
+    out$compact_dendrograms <- compact_dendros
+  }
 
   # Use reduced precision (6 digits) for faster JSON serialization
   # Binary-encoded matrices don't need high precision in JSON

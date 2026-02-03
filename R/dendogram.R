@@ -34,13 +34,60 @@ dendro_to_segments <- function(dendro,
                                color = "gray"){
   orientation <- match.arg(orientation)
   d <- dendro_to_coords(dendro, orientation)
-  shapes <- lapply(seq_len(nrow(d)), 
-                   function(x) c(as.list(d[x,]), 
+  shapes <- lapply(seq_len(nrow(d)),
+                   function(x) c(as.list(d[x,]),
                                  list(type = "line",
                                       xref = xaxis,
                                       yref = yaxis,
                                       line = list(color = color))))
   return(shapes)
+}
+
+# Threshold for using compact dendrogram encoding (number of segments)
+DENDRO_COMPACT_THRESHOLD <- 100
+
+#' Create compact dendrogram representation for large dendrograms
+#' @param dendro hclust object
+#' @param xaxis x axis reference
+#' @param yaxis y axis reference
+#' @param orientation orientation of dendrogram
+#' @param color line color
+#' @return list with compact binary representation or NULL if not beneficial
+#' @keywords internal
+dendro_to_compact <- function(dendro,
+                              xaxis,
+                              yaxis,
+                              orientation = c("left","bottom","right","top"),
+                              color = "gray") {
+  orientation <- match.arg(orientation)
+  d <- dendro_to_coords(dendro, orientation)
+
+  # Only use compact format for large dendrograms
+  if (nrow(d) < DENDRO_COMPACT_THRESHOLD) {
+    return(NULL)
+  }
+
+  # Interleave coordinates: [x0, x1, y0, y1, x0, x1, y0, y1, ...]
+  coords <- as.vector(t(as.matrix(d)))
+
+  # Convert to Float32 binary (uses in-memory approach from to_widget.R)
+  raw_data <- double_to_float32_raw(coords)
+
+  # Apply zlib compression (significant savings for dendrogram coordinates)
+  compressed_data <- memCompress(raw_data, type = "gzip")
+  b64_data <- base64enc::base64encode(compressed_data)
+
+  list(
+    dendro_compact = list(
+      coords_binary = b64_data,
+      n_segments = nrow(d),
+      dtype = "float32",
+      encoding = "base64-zlib",
+      xref = xaxis,
+      yref = yaxis,
+      color = color
+    )
+  )
 }
 
 dendro_layout <- c(no_axis,
@@ -54,6 +101,13 @@ setMethod("make_shapes", signature = c(x = "Dendrogram"),
             xaxis <- id(xaxes[[xaxis_name(x)]])
             yaxis <- id(yaxes[[yaxis_name(x)]])
 
+            # Try compact format first for large dendrograms
+            compact <- dendro_to_compact(dendro, xaxis, yaxis, orientation = side)
+            if (!is.null(compact)) {
+              return(compact)
+            }
+
+            # Fall back to standard format for small dendrograms
             out <- dendro_to_segments(dendro, xaxis, yaxis, orientation = side)
             out
           })

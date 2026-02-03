@@ -10,17 +10,40 @@ function base64ToUint8Array(base64) {
   return bytes;
 }
 
-// Decompress gzip data using native DecompressionStream API
-async function decompressGzip(compressedData) {
+// Decompress zlib/gzip data using native DecompressionStream API
+// Note: R's memCompress(type="gzip") actually produces zlib format, not gzip
+async function decompressData(compressedData, format) {
   if (typeof DecompressionStream === 'undefined') {
     throw new Error('DecompressionStream not supported in this browser');
   }
 
-  var ds = new DecompressionStream('gzip');
+  // R's memCompress(type="gzip") produces zlib format, use 'deflate' to decompress
+  // 'deflate' in DecompressionStream handles zlib format (with header)
+  var compressionFormat = (format === 'zlib' || format === 'gzip') ? 'deflate' : format;
+  var ds = new DecompressionStream(compressionFormat);
   var decompressedStream = new Blob([compressedData]).stream().pipeThrough(ds);
-  var decompressedBlob = await new Response(decompressedStream).blob();
-  var arrayBuffer = await decompressedBlob.arrayBuffer();
-  return new Uint8Array(arrayBuffer);
+
+  // Read stream chunks directly instead of using Response (avoids "Failed to fetch" errors)
+  var reader = decompressedStream.getReader();
+  var chunks = [];
+  var totalLength = 0;
+
+  while (true) {
+    var result = await reader.read();
+    if (result.done) break;
+    chunks.push(result.value);
+    totalLength += result.value.length;
+  }
+
+  // Combine chunks into single Uint8Array
+  var combined = new Uint8Array(totalLength);
+  var offset = 0;
+  for (var i = 0; i < chunks.length; i++) {
+    combined.set(chunks[i], offset);
+    offset += chunks[i].length;
+  }
+
+  return combined;
 }
 
 // Convert buffer to typed array based on dtype
@@ -87,10 +110,10 @@ async function decodeBinaryMatrixAsync(binaryData) {
   // Decode base64
   var rawBytes = base64ToUint8Array(binaryData.data_binary);
 
-  // Decompress if gzip
+  // Decompress if compressed (R's memCompress produces zlib format)
   var decodedBytes;
   if (encoding === 'base64-gzip') {
-    decodedBytes = await decompressGzip(rawBytes);
+    decodedBytes = await decompressData(rawBytes, 'zlib');
   } else {
     decodedBytes = rawBytes;
   }
@@ -180,6 +203,76 @@ function needsAsyncDecode(data) {
   return false;
 }
 
+// Expand implicit coordinates (x_implicit/y_implicit) to full arrays
+// When x_implicit=n is present, it means x should be [1, 2, ..., n]
+function expandImplicitCoordinates(data) {
+  for (var i = 0; i < data.length; i++) {
+    var trace = data[i];
+
+    if (trace.x_implicit !== undefined) {
+      var n = trace.x_implicit;
+      trace.x = [];
+      for (var j = 1; j <= n; j++) {
+        trace.x.push(j);
+      }
+      delete trace.x_implicit;
+    }
+
+    if (trace.y_implicit !== undefined) {
+      var m = trace.y_implicit;
+      trace.y = [];
+      for (var k = 1; k <= m; k++) {
+        trace.y.push(k);
+      }
+      delete trace.y_implicit;
+    }
+  }
+  return data;
+}
+
+// Decode compact dendrogram binary data into Plotly shapes (async for zlib support)
+async function decodeCompactDendrograms(compactDendros, existingShapes) {
+  if (!compactDendros || compactDendros.length === 0) {
+    return existingShapes || [];
+  }
+
+  var shapes = existingShapes ? existingShapes.slice() : [];
+
+  for (var i = 0; i < compactDendros.length; i++) {
+    var dendro = compactDendros[i];
+    if (!dendro.coords_binary || !dendro.n_segments) continue;
+
+    // Decode binary coordinates
+    var rawBytes = base64ToUint8Array(dendro.coords_binary);
+
+    // Decompress if zlib encoded
+    if (dendro.encoding === 'base64-zlib') {
+      rawBytes = await decompressData(rawBytes, 'zlib');
+    }
+
+    var dtype = dendro.dtype || 'float32';
+    var floatArray = bufferToTypedArray(rawBytes, dtype);
+
+    // Each segment has 4 coordinates: x0, x1, y0, y1
+    var n = dendro.n_segments;
+    for (var j = 0; j < n; j++) {
+      var offset = j * 4;
+      shapes.push({
+        x0: floatArray[offset],
+        x1: floatArray[offset + 1],
+        y0: floatArray[offset + 2],
+        y1: floatArray[offset + 3],
+        type: 'line',
+        xref: dendro.xref,
+        yref: dendro.yref,
+        line: { color: dendro.color || 'gray' }
+      });
+    }
+  }
+
+  return shapes;
+}
+
 // Sanitize text for safe HTML display (prevent XSS)
 function sanitizeText(text) {
   if (text === null || text === undefined) return '';
@@ -190,6 +283,7 @@ function sanitizeText(text) {
 }
 
 // Generate tooltip text on-demand for lazy tooltips
+// Values are read from trace.z matrix (not stored in lazy_tooltip to save space)
 function generateLazyTooltip(trace, rowIdx, colIdx) {
   var lt = trace.lazy_tooltip;
   if (!lt) return null;
@@ -216,13 +310,17 @@ function generateLazyTooltip(trace, rowIdx, colIdx) {
     parts.push(sanitizeText(lt.prepend_col) + sanitizeText(lt.col_labels[colIdx]));
   }
 
-  // Check bounds for values (2D array)
-  if (lt.show_value && lt.values &&
-      rowIdx < lt.values.length &&
-      lt.values[rowIdx] &&
-      colIdx < lt.values[rowIdx].length &&
-      lt.values[rowIdx][colIdx] !== undefined) {
-    parts.push(sanitizeText(lt.prepend_value) + sanitizeText(lt.values[rowIdx][colIdx]));
+  // Read values from trace.z matrix (saves ~60% space vs storing in lazy_tooltip)
+  if (lt.show_value && trace.z &&
+      rowIdx < trace.z.length &&
+      trace.z[rowIdx] &&
+      colIdx < trace.z[rowIdx].length) {
+    var value = trace.z[rowIdx][colIdx];
+    if (value !== null && value !== undefined) {
+      // Format to 3 significant figures for display
+      var formatted = typeof value === 'number' ? value.toPrecision(4) : value;
+      parts.push(sanitizeText(lt.prepend_value) + formatted);
+    }
   }
 
   // Return null if no valid parts (fallback handled by caller)
@@ -373,7 +471,10 @@ HTMLWidgets.widget({
 
     var graphDiv = document.getElementById(el.id);
 
-    // Function to complete rendering after data is decoded
+    // Expand implicit coordinates (x_implicit/y_implicit -> full arrays)
+    expandImplicitCoordinates(x.data);
+
+    // Function to complete rendering after all data is decoded
     function completeRender() {
       // if no plot exists yet, create one with a particular configuration
       if (!instance.plotly) {
@@ -397,24 +498,38 @@ HTMLWidgets.widget({
       }
     }
 
-    // Check if we need async decoding (for gzip-compressed data)
-    if (needsAsyncDecode(x.data)) {
-      // Async path: decode compressed data then render
-      decodeBinaryTracesAsync(x.data).then(function() {
-        completeRender();
-      }).catch(function(error) {
-        console.error('Error decoding binary data:', error);
-        // Clean up traces that failed to decode to avoid inconsistent state
-        for (var j = 0; j < x.data.length; j++) {
-          if (x.data[j].z_binary && !x.data[j].z) {
-            // Set empty z array so Plotly doesn't crash
-            x.data[j].z = [];
-            delete x.data[j].z_binary;
+    // Check if we need async decoding (compressed data or compact dendrograms)
+    var hasCompactDendros = x.compact_dendrograms && x.compact_dendrograms.length > 0;
+
+    if (needsAsyncDecode(x.data) || hasCompactDendros) {
+      // Async path: decode compressed data and dendrograms then render
+      (async function() {
+        try {
+          // Decode binary traces
+          await decodeBinaryTracesAsync(x.data);
+
+          // Decode compact dendrograms (now with zlib compression)
+          if (hasCompactDendros) {
+            x.layout.shapes = await decodeCompactDendrograms(
+              x.compact_dendrograms,
+              x.layout.shapes
+            );
+            delete x.compact_dendrograms;
           }
+
+          completeRender();
+        } catch (error) {
+          console.error('Error decoding data:', error);
+          // Clean up traces that failed to decode
+          for (var j = 0; j < x.data.length; j++) {
+            if (x.data[j].z_binary && !x.data[j].z) {
+              x.data[j].z = [];
+              delete x.data[j].z_binary;
+            }
+          }
+          completeRender();
         }
-        // Try to render with cleaned up data
-        completeRender();
-      });
+      })();
     } else {
       // Sync path: decode uncompressed data and render immediately
       x.data = decodeBinaryTraces(x.data);
