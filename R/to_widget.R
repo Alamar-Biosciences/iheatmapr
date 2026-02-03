@@ -2,16 +2,39 @@
 # Matrices larger than this will be encoded as base64 binary
 BINARY_ENCODING_THRESHOLD <- 100000
 
+#' Convert double vector to float32 raw bytes
+#' @param x numeric vector (NA values should be handled before calling)
+#' @return raw vector containing float32 bytes
+#' @details
+#' - Inf/-Inf values are clamped to float32 max/min (acceptable for visualization)
+#' - NaN values pass through as NaN
+#' - Uses in-memory raw connection for efficiency
+#' @keywords internal
+double_to_float32_raw <- function(x) {
+  # Clamp to float32 range to avoid overflow (Inf becomes float32 max)
+  x <- pmax(pmin(x, 3.4028235e+38), -3.4028235e+38)
+
+  # Use in-memory raw connection (faster than temp file)
+  con <- rawConnection(raw(0), "wb")
+  on.exit(close(con), add = TRUE)
+  writeBin(x, con, size = 4)
+
+  rawConnectionValue(con)
+}
+
 #' Encode a numeric matrix as base64 binary
 #' @param mat A numeric matrix
-#' @return A list with base64 data, dimensions, NA positions, and encoding flag
+#' @param use_float32 Use 32-bit floats instead of 64-bit (default TRUE, halves size)
+#' @param compress Use gzip compression (default FALSE). Enable for data with
+#'   compressible patterns. Note: requires browser with DecompressionStream API
+#'   (Chrome 80+, Firefox 113+, Safari 16.4+).
+#' @return A list with base64 data, dimensions, NA positions, and encoding metadata
 #' @keywords internal
 #' @importFrom base64enc base64encode
-encode_matrix_binary <- function(mat) {
+encode_matrix_binary <- function(mat, use_float32 = TRUE, compress = FALSE) {
 
   # Validate matrix
-
-if (!is.matrix(mat) || nrow(mat) == 0 || ncol(mat) == 0) {
+  if (!is.matrix(mat) || nrow(mat) == 0 || ncol(mat) == 0) {
     stop("encode_matrix_binary requires a non-empty matrix")
   }
 
@@ -25,16 +48,31 @@ if (!is.matrix(mat) || nrow(mat) == 0 || ncol(mat) == 0) {
     mat_clean[na_mask] <- 0
   }
 
-  # Convert matrix to raw bytes (column-major order, 8-byte doubles)
-  raw_data <- writeBin(as.vector(mat_clean), raw(), size = 8)
+  # Convert matrix to raw bytes (column-major order)
+  if (use_float32) {
+    raw_data <- double_to_float32_raw(as.vector(mat_clean))
+    dtype <- "float32"
+  } else {
+    raw_data <- writeBin(as.vector(mat_clean), raw(), size = 8)
+    dtype <- "float64"
+  }
+
+  # Apply gzip compression if requested
+  if (compress) {
+    raw_data <- memCompress(raw_data, type = "gzip")
+    encoding <- "base64-gzip"
+  } else {
+    encoding <- "base64"
+  }
+
   # Encode as base64
   b64_data <- base64enc::base64encode(raw_data)
 
   result <- list(
     data_binary = b64_data,
     dims = dim(mat),
-    dtype = "float64",
-    encoding = "base64"
+    dtype = dtype,
+    encoding = encoding
   )
 
   # Include NA positions if present

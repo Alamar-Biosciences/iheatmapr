@@ -1,28 +1,53 @@
 // Function adapted from Plotly R Package 3.60,
 
-// Decode base64 string to ArrayBuffer
-function base64ToArrayBuffer(base64) {
+// Decode base64 string to Uint8Array
+function base64ToUint8Array(base64) {
   var binaryString = atob(base64);
   var bytes = new Uint8Array(binaryString.length);
   for (var i = 0; i < binaryString.length; i++) {
     bytes[i] = binaryString.charCodeAt(i);
   }
-  return bytes.buffer;
+  return bytes;
 }
 
-// Decode binary-encoded matrix from trace
-function decodeBinaryMatrix(binaryData) {
-  if (!binaryData || !binaryData.data_binary || !binaryData.dims) {
-    return null;
+// Decompress gzip data using native DecompressionStream API
+async function decompressGzip(compressedData) {
+  if (typeof DecompressionStream === 'undefined') {
+    throw new Error('DecompressionStream not supported in this browser');
   }
 
-  var buffer = base64ToArrayBuffer(binaryData.data_binary);
-  var floatArray = new Float64Array(buffer);
+  var ds = new DecompressionStream('gzip');
+  var decompressedStream = new Blob([compressedData]).stream().pipeThrough(ds);
+  var decompressedBlob = await new Response(decompressedStream).blob();
+  var arrayBuffer = await decompressedBlob.arrayBuffer();
+  return new Uint8Array(arrayBuffer);
+}
 
-  var nrows = binaryData.dims[0];
-  var ncols = binaryData.dims[1];
+// Convert buffer to typed array based on dtype
+// Handles byte alignment issues when buffer is a Uint8Array slice
+function bufferToTypedArray(buffer, dtype) {
+  var arrayBuffer;
 
-  // Convert flat array to 2D array (column-major order from R)
+  if (buffer instanceof Uint8Array) {
+    // Create a new ArrayBuffer to ensure proper byte alignment
+    // This handles cases where the Uint8Array may be a slice with non-zero offset
+    arrayBuffer = buffer.buffer.slice(
+      buffer.byteOffset,
+      buffer.byteOffset + buffer.byteLength
+    );
+  } else {
+    arrayBuffer = buffer;
+  }
+
+  if (dtype === 'float32') {
+    return new Float32Array(arrayBuffer);
+  } else {
+    return new Float64Array(arrayBuffer);
+  }
+}
+
+// Convert flat typed array to 2D matrix (column-major order from R)
+function flatArrayToMatrix(floatArray, nrows, ncols) {
   var matrix = [];
   for (var i = 0; i < nrows; i++) {
     var row = [];
@@ -31,32 +56,128 @@ function decodeBinaryMatrix(binaryData) {
     }
     matrix.push(row);
   }
+  return matrix;
+}
 
-  // Restore NA values if present (positions are 0-indexed, column-major)
-  if (binaryData.na_positions && binaryData.na_positions.length > 0) {
-    for (var k = 0; k < binaryData.na_positions.length; k++) {
-      var pos = binaryData.na_positions[k];
-      var col = Math.floor(pos / nrows);
-      var row = pos % nrows;
-      if (row < matrix.length && col < matrix[row].length) {
-        matrix[row][col] = null;  // null is Plotly's representation of NA
-      }
+// Restore NA values in matrix
+function restoreNAValues(matrix, naPositions, nrows) {
+  if (!naPositions || naPositions.length === 0) return;
+
+  for (var k = 0; k < naPositions.length; k++) {
+    var pos = naPositions[k];
+    var col = Math.floor(pos / nrows);
+    var row = pos % nrows;
+    if (row < matrix.length && col < matrix[row].length) {
+      matrix[row][col] = null;  // null is Plotly's representation of NA
     }
   }
+}
+
+// Decode binary-encoded matrix from trace (async for gzip support)
+async function decodeBinaryMatrixAsync(binaryData) {
+  if (!binaryData || !binaryData.data_binary || !binaryData.dims) {
+    return null;
+  }
+
+  var nrows = binaryData.dims[0];
+  var ncols = binaryData.dims[1];
+  var dtype = binaryData.dtype || 'float64';
+  var encoding = binaryData.encoding || 'base64';
+
+  // Decode base64
+  var rawBytes = base64ToUint8Array(binaryData.data_binary);
+
+  // Decompress if gzip
+  var decodedBytes;
+  if (encoding === 'base64-gzip') {
+    decodedBytes = await decompressGzip(rawBytes);
+  } else {
+    decodedBytes = rawBytes;
+  }
+
+  // Convert to appropriate typed array
+  var floatArray = bufferToTypedArray(decodedBytes, dtype);
+
+  // Convert to 2D matrix
+  var matrix = flatArrayToMatrix(floatArray, nrows, ncols);
+
+  // Restore NA values
+  restoreNAValues(matrix, binaryData.na_positions, nrows);
 
   return matrix;
 }
 
-// Process traces to decode any binary-encoded matrices
+// Synchronous fallback for non-compressed data
+function decodeBinaryMatrixSync(binaryData) {
+  if (!binaryData || !binaryData.data_binary || !binaryData.dims) {
+    return null;
+  }
+
+  var encoding = binaryData.encoding || 'base64';
+
+  // If gzip compressed, return null (will be handled async)
+  if (encoding === 'base64-gzip') {
+    return null;
+  }
+
+  var nrows = binaryData.dims[0];
+  var ncols = binaryData.dims[1];
+  var dtype = binaryData.dtype || 'float64';
+
+  var rawBytes = base64ToUint8Array(binaryData.data_binary);
+  var floatArray = bufferToTypedArray(rawBytes, dtype);
+  var matrix = flatArrayToMatrix(floatArray, nrows, ncols);
+  restoreNAValues(matrix, binaryData.na_positions, nrows);
+
+  return matrix;
+}
+
+// Process traces to decode any binary-encoded matrices (async)
+async function decodeBinaryTracesAsync(data) {
+  var promises = [];
+
+  for (var i = 0; i < data.length; i++) {
+    var trace = data[i];
+    if (trace.z_binary) {
+      // IIFE to capture trace reference in closure
+      (function(t) {
+        var promise = decodeBinaryMatrixAsync(t.z_binary).then(function(matrix) {
+          t.z = matrix;
+          delete t.z_binary;
+        });
+        promises.push(promise);
+      })(trace);
+    }
+  }
+
+  await Promise.all(promises);
+  return data;
+}
+
+// Synchronous version for backwards compatibility (non-gzip only)
 function decodeBinaryTraces(data) {
   for (var i = 0; i < data.length; i++) {
     var trace = data[i];
     if (trace.z_binary) {
-      trace.z = decodeBinaryMatrix(trace.z_binary);
-      delete trace.z_binary; // Clean up to save memory
+      var matrix = decodeBinaryMatrixSync(trace.z_binary);
+      if (matrix !== null) {
+        trace.z = matrix;
+        delete trace.z_binary;
+      }
+      // If null (gzip), leave z_binary for async processing
     }
   }
   return data;
+}
+
+// Check if any traces need async decoding
+function needsAsyncDecode(data) {
+  for (var i = 0; i < data.length; i++) {
+    if (data[i].z_binary && data[i].z_binary.encoding === 'base64-gzip') {
+      return true;
+    }
+  }
+  return false;
 }
 
 // Sanitize text for safe HTML display (prevent XSS)
@@ -250,30 +371,54 @@ HTMLWidgets.widget({
       shinyMode = !!window.Shiny;
     }
 
-    // Decode any binary-encoded matrices before plotting
-    x.data = decodeBinaryTraces(x.data);
-
     var graphDiv = document.getElementById(el.id);
 
-    // if no plot exists yet, create one with a particular configuration
-    if (!instance.plotly) {
-      Plotly.plot(graphDiv, x.data, x.layout, x.config);
-      instance.plotly = true;
-      instance.autosize = x.layout.autosize;
+    // Function to complete rendering after data is decoded
+    function completeRender() {
+      // if no plot exists yet, create one with a particular configuration
+      if (!instance.plotly) {
+        Plotly.plot(graphDiv, x.data, x.layout, x.config);
+        instance.plotly = true;
+        instance.autosize = x.layout.autosize;
 
-      // Add colorbar hover handlers after rendering
-      addColorbarHoverHandlers(graphDiv, x.data);
+        // Add colorbar hover handlers after rendering
+        addColorbarHoverHandlers(graphDiv, x.data);
 
-      // Set up lazy tooltip handlers for on-demand tooltip generation
-      setupLazyTooltipHandlers(graphDiv, x.data);
+        // Set up lazy tooltip handlers for on-demand tooltip generation
+        setupLazyTooltipHandlers(graphDiv, x.data);
+      } else {
+        Plotly.newPlot(graphDiv, x.data, x.layout);
+
+        // Add colorbar hover handlers after re-rendering
+        addColorbarHoverHandlers(graphDiv, x.data);
+
+        // Set up lazy tooltip handlers for on-demand tooltip generation
+        setupLazyTooltipHandlers(graphDiv, x.data);
+      }
+    }
+
+    // Check if we need async decoding (for gzip-compressed data)
+    if (needsAsyncDecode(x.data)) {
+      // Async path: decode compressed data then render
+      decodeBinaryTracesAsync(x.data).then(function() {
+        completeRender();
+      }).catch(function(error) {
+        console.error('Error decoding binary data:', error);
+        // Clean up traces that failed to decode to avoid inconsistent state
+        for (var j = 0; j < x.data.length; j++) {
+          if (x.data[j].z_binary && !x.data[j].z) {
+            // Set empty z array so Plotly doesn't crash
+            x.data[j].z = [];
+            delete x.data[j].z_binary;
+          }
+        }
+        // Try to render with cleaned up data
+        completeRender();
+      });
     } else {
-      Plotly.newPlot(graphDiv, x.data, x.layout);
-
-      // Add colorbar hover handlers after re-rendering
-      addColorbarHoverHandlers(graphDiv, x.data);
-
-      // Set up lazy tooltip handlers for on-demand tooltip generation
-      setupLazyTooltipHandlers(graphDiv, x.data);
+      // Sync path: decode uncompressed data and render immediately
+      x.data = decodeBinaryTraces(x.data);
+      completeRender();
     }
 
     sendEventData = function(eventType) {
