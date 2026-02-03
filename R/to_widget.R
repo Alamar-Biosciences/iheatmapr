@@ -1,3 +1,48 @@
+# Threshold for using binary encoding (number of cells)
+# Matrices larger than this will be encoded as base64 binary
+BINARY_ENCODING_THRESHOLD <- 100000
+
+#' Encode a numeric matrix as base64 binary
+#' @param mat A numeric matrix
+#' @return A list with base64 data, dimensions, and encoding flag
+#' @keywords internal
+encode_matrix_binary <- function(mat) {
+  # Convert matrix to raw bytes (column-major order, 8-byte doubles)
+  raw_data <- writeBin(as.vector(mat), raw(), size = 8)
+  # Encode as base64
+  b64_data <- base64enc::base64encode(raw_data)
+  list(
+    data_binary = b64_data,
+    dims = dim(mat),
+    dtype = "float64",
+    encoding = "base64"
+  )
+}
+
+#' Check if a trace should use binary encoding
+#' @param trace A plotly trace list
+#' @return TRUE if the trace has a large z matrix
+#' @keywords internal
+should_use_binary <- function(trace) {
+  if (is.null(trace$z)) return(FALSE)
+  if (!is.matrix(trace$z)) return(FALSE)
+  length(trace$z) > BINARY_ENCODING_THRESHOLD
+}
+
+#' Convert trace z matrix to binary if large enough
+#' @param trace A plotly trace list
+#' @return The trace with z optionally converted to binary
+#' @keywords internal
+maybe_encode_trace_binary <- function(trace) {
+  if (should_use_binary(trace)) {
+    # Store original z matrix as binary
+    trace$z_binary <- encode_matrix_binary(trace$z)
+    # Replace z with placeholder (will be decoded in JS)
+    trace$z <- NULL
+  }
+  trace
+}
+
 #' @name to_plotly
 #' @export
 to_plotly_list <- function(p){
@@ -30,14 +75,20 @@ to_plotly_list <- function(p){
     layout_setting$legend$x <- get_legend_position(p)
     layout_setting$legend$xanchor <- "left"
   }
+  # Apply binary encoding to large matrices
+  traces <- lapply(traces, maybe_encode_trace_binary)
+
   out <- list(data = traces,
               layout = layout_setting,
               source = p@source,
-              config = list(modeBarButtonsToRemove = 
+              config = list(modeBarButtonsToRemove =
                               c("sendDataToCloud",
                                 "autoScale2d")))
+
+  # Use reduced precision (6 digits) for faster JSON serialization
+  # Binary-encoded matrices don't need high precision in JSON
   attr(out, "TOJSON_FUNC") <- function(x, ...) {
-    toJSON(x, digits = 50, auto_unbox = TRUE, force = TRUE,
+    toJSON(x, digits = 6, auto_unbox = TRUE, force = TRUE,
            null = "null", na = "null", ...)
   }
   out

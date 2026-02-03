@@ -1,20 +1,68 @@
-// Function adapted from Plotly R Package 3.60, 
+// Function adapted from Plotly R Package 3.60,
+
+// Decode base64 string to ArrayBuffer
+function base64ToArrayBuffer(base64) {
+  var binaryString = atob(base64);
+  var bytes = new Uint8Array(binaryString.length);
+  for (var i = 0; i < binaryString.length; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes.buffer;
+}
+
+// Decode binary-encoded matrix from trace
+function decodeBinaryMatrix(binaryData) {
+  if (!binaryData || !binaryData.data_binary || !binaryData.dims) {
+    return null;
+  }
+
+  var buffer = base64ToArrayBuffer(binaryData.data_binary);
+  var floatArray = new Float64Array(buffer);
+
+  var nrows = binaryData.dims[0];
+  var ncols = binaryData.dims[1];
+
+  // Convert flat array to 2D array (column-major order from R)
+  var matrix = [];
+  for (var i = 0; i < nrows; i++) {
+    var row = [];
+    for (var j = 0; j < ncols; j++) {
+      row.push(floatArray[j * nrows + i]);
+    }
+    matrix.push(row);
+  }
+
+  return matrix;
+}
+
+// Process traces to decode any binary-encoded matrices
+function decodeBinaryTraces(data) {
+  for (var i = 0; i < data.length; i++) {
+    var trace = data[i];
+    if (trace.z_binary) {
+      trace.z = decodeBinaryMatrix(trace.z_binary);
+      delete trace.z_binary; // Clean up to save memory
+    }
+  }
+  return data;
+}
+
 HTMLWidgets.widget({
   name: "iheatmapr",
   type: "output",
-  
+
   initialize: function(el, width, height) {
     return {};
   },
-  
+
   resize: function(el, width, height, instance) {
     if (instance.autosize) {
       Plotly.relayout(el.id, {width: width, height: height});
     }
-  },  
-  
+  },
+
   renderValue: function(el, x, instance) {
-    
+
     var shinyMode;
     if (typeof(window) !== "undefined") {
       // make sure plots don't get created outside the network
@@ -22,9 +70,12 @@ HTMLWidgets.widget({
       window.PLOTLYENV.BASE_URL = x.base_url;
       shinyMode = !!window.Shiny;
     }
-    
+
+    // Decode any binary-encoded matrices before plotting
+    x.data = decodeBinaryTraces(x.data);
+
     var graphDiv = document.getElementById(el.id);
-    
+
     // if no plot exists yet, create one with a particular configuration
     if (!instance.plotly) {
       Plotly.plot(graphDiv, x.data, x.layout, x.config);

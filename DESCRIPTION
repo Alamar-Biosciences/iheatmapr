@@ -61,7 +61,8 @@ Imports:
     jsonlite,
     scales,
     knitr,
-    tools
+    tools,
+    base64enc
 Suggests:
     htmltools,
     datasets,
