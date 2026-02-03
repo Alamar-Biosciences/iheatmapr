@@ -4,19 +4,45 @@ BINARY_ENCODING_THRESHOLD <- 100000
 
 #' Encode a numeric matrix as base64 binary
 #' @param mat A numeric matrix
-#' @return A list with base64 data, dimensions, and encoding flag
+#' @return A list with base64 data, dimensions, NA positions, and encoding flag
 #' @keywords internal
+#' @importFrom base64enc base64encode
 encode_matrix_binary <- function(mat) {
+
+  # Validate matrix
+
+if (!is.matrix(mat) || nrow(mat) == 0 || ncol(mat) == 0) {
+    stop("encode_matrix_binary requires a non-empty matrix")
+  }
+
+  # Track NA positions (0-indexed for JavaScript)
+  na_mask <- is.na(mat)
+  has_na <- any(na_mask)
+
+  # Replace NA with 0 for binary encoding (will be restored in JS)
+  mat_clean <- mat
+  if (has_na) {
+    mat_clean[na_mask] <- 0
+  }
+
   # Convert matrix to raw bytes (column-major order, 8-byte doubles)
-  raw_data <- writeBin(as.vector(mat), raw(), size = 8)
+  raw_data <- writeBin(as.vector(mat_clean), raw(), size = 8)
   # Encode as base64
   b64_data <- base64enc::base64encode(raw_data)
-  list(
+
+  result <- list(
     data_binary = b64_data,
     dims = dim(mat),
     dtype = "float64",
     encoding = "base64"
   )
+
+  # Include NA positions if present
+  if (has_na) {
+    result$na_positions <- I(which(na_mask) - 1L)  # 0-indexed for JS
+  }
+
+  result
 }
 
 #' Check if a trace should use binary encoding
@@ -26,6 +52,8 @@ encode_matrix_binary <- function(mat) {
 should_use_binary <- function(trace) {
   if (is.null(trace$z)) return(FALSE)
   if (!is.matrix(trace$z)) return(FALSE)
+  # Check for valid dimensions
+  if (nrow(trace$z) == 0 || ncol(trace$z) == 0) return(FALSE)
   length(trace$z) > BINARY_ENCODING_THRESHOLD
 }
 

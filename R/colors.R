@@ -82,6 +82,9 @@ setMethod(colorscale, "ContinuousColorbar",
               sampled_z <- stats::quantile(z_vec, probs = probs, na.rm = TRUE)
               vals <- scales::rescale(sampled_z, from = c(zmin, zmax))
               vals <- pmin(pmax(vals, 0), 1)  # Clamp to [0, 1]
+              # Ensure boundary values are included for custom zmin/zmax
+              if (!any(vals == 0)) vals <- c(0, vals)
+              if (!any(vals == 1)) vals <- c(vals, 1)
             } else {
               # Use all unique values for small datasets (current behavior)
               unique_z <- stats::na.omit(unique(z_vec))

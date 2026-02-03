@@ -32,6 +32,18 @@ function decodeBinaryMatrix(binaryData) {
     matrix.push(row);
   }
 
+  // Restore NA values if present (positions are 0-indexed, column-major)
+  if (binaryData.na_positions && binaryData.na_positions.length > 0) {
+    for (var k = 0; k < binaryData.na_positions.length; k++) {
+      var pos = binaryData.na_positions[k];
+      var col = Math.floor(pos / nrows);
+      var row = pos % nrows;
+      if (row < matrix.length && col < matrix[row].length) {
+        matrix[row][col] = null;  // null is Plotly's representation of NA
+      }
+    }
+  }
+
   return matrix;
 }
 
@@ -47,24 +59,53 @@ function decodeBinaryTraces(data) {
   return data;
 }
 
+// Sanitize text for safe HTML display (prevent XSS)
+function sanitizeText(text) {
+  if (text === null || text === undefined) return '';
+  var str = String(text);
+  var div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
 // Generate tooltip text on-demand for lazy tooltips
 function generateLazyTooltip(trace, rowIdx, colIdx) {
   var lt = trace.lazy_tooltip;
   if (!lt) return null;
 
+  // Bounds checking for indices
+  if (rowIdx === undefined || colIdx === undefined ||
+      rowIdx < 0 || colIdx < 0) {
+    return null;
+  }
+
   var parts = [];
 
-  if (lt.show_row && lt.row_labels && lt.row_labels[rowIdx] !== undefined) {
-    parts.push(lt.prepend_row + lt.row_labels[rowIdx]);
+  // Check bounds for row labels
+  if (lt.show_row && lt.row_labels &&
+      rowIdx < lt.row_labels.length &&
+      lt.row_labels[rowIdx] !== undefined) {
+    parts.push(sanitizeText(lt.prepend_row) + sanitizeText(lt.row_labels[rowIdx]));
   }
 
-  if (lt.show_col && lt.col_labels && lt.col_labels[colIdx] !== undefined) {
-    parts.push(lt.prepend_col + lt.col_labels[colIdx]);
+  // Check bounds for col labels
+  if (lt.show_col && lt.col_labels &&
+      colIdx < lt.col_labels.length &&
+      lt.col_labels[colIdx] !== undefined) {
+    parts.push(sanitizeText(lt.prepend_col) + sanitizeText(lt.col_labels[colIdx]));
   }
 
-  if (lt.show_value && lt.values && lt.values[rowIdx] && lt.values[rowIdx][colIdx] !== undefined) {
-    parts.push(lt.prepend_value + lt.values[rowIdx][colIdx]);
+  // Check bounds for values (2D array)
+  if (lt.show_value && lt.values &&
+      rowIdx < lt.values.length &&
+      lt.values[rowIdx] &&
+      colIdx < lt.values[rowIdx].length &&
+      lt.values[rowIdx][colIdx] !== undefined) {
+    parts.push(sanitizeText(lt.prepend_value) + sanitizeText(lt.values[rowIdx][colIdx]));
   }
+
+  // Return null if no valid parts (fallback handled by caller)
+  if (parts.length === 0) return null;
 
   return parts.join('<br>');
 }
@@ -119,15 +160,29 @@ function setupLazyTooltipHandlers(graphDiv, data) {
 
   if (!hasLazyTooltips) return;
 
+  // Clean up any existing lazy tooltip handlers to prevent memory leaks
+  if (graphDiv._lazyTooltipHandlers) {
+    if (graphDiv._lazyTooltipHandlers.mousemove) {
+      graphDiv.removeEventListener('mousemove', graphDiv._lazyTooltipHandlers.mousemove);
+    }
+    try {
+      graphDiv.removeAllListeners('plotly_hover');
+      graphDiv.removeAllListeners('plotly_unhover');
+    } catch (e) {
+      // Ignore if listeners don't exist
+    }
+  }
+
   // Track mouse position for tooltip placement
   var mouseX = 0, mouseY = 0;
-  graphDiv.addEventListener('mousemove', function(e) {
+  var mousemoveHandler = function(e) {
     mouseX = e.clientX;
     mouseY = e.clientY;
-  });
+  };
+  graphDiv.addEventListener('mousemove', mousemoveHandler);
 
   // Handle hover events
-  graphDiv.on('plotly_hover', function(eventData) {
+  var hoverHandler = function(eventData) {
     if (!eventData || !eventData.points || eventData.points.length === 0) return;
 
     var pt = eventData.points[0];
@@ -154,11 +209,21 @@ function setupLazyTooltipHandlers(graphDiv, data) {
         }
       }
     }
-  });
+  };
 
-  graphDiv.on('plotly_unhover', function() {
+  var unhoverHandler = function() {
     hideLazyTooltip();
-  });
+  };
+
+  graphDiv.on('plotly_hover', hoverHandler);
+  graphDiv.on('plotly_unhover', unhoverHandler);
+
+  // Store handlers for cleanup
+  graphDiv._lazyTooltipHandlers = {
+    mousemove: mousemoveHandler,
+    hover: hoverHandler,
+    unhover: unhoverHandler
+  };
 }
 
 HTMLWidgets.widget({
@@ -547,11 +612,21 @@ HTMLWidgets.widget({
         graphDiv._colorbarHandlerTimeout = null;
       }
 
+      // Clean up lazy tooltip handlers
+      if (graphDiv._lazyTooltipHandlers) {
+        if (graphDiv._lazyTooltipHandlers.mousemove) {
+          graphDiv.removeEventListener('mousemove', graphDiv._lazyTooltipHandlers.mousemove);
+        }
+        graphDiv._lazyTooltipHandlers = null;
+      }
+
       // Remove Plotly event listeners
       try {
         graphDiv.removeAllListeners('plotly_relayout');
         graphDiv.removeAllListeners('plotly_restyle');
         graphDiv.removeAllListeners('plotly_redraw');
+        graphDiv.removeAllListeners('plotly_hover');
+        graphDiv.removeAllListeners('plotly_unhover');
       } catch (e) {
         // Ignore errors if listeners don't exist
       }
