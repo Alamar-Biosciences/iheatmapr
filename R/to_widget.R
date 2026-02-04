@@ -158,12 +158,35 @@ to_plotly_list <- function(p){
   # Apply binary encoding to large matrices
   traces <- lapply(traces, maybe_encode_trace_binary)
 
+  # Extract custom iheatmapr fields from traces to avoid Plotly validation stripping them
+  # These fields are not standard Plotly attributes and would be removed by plotly's schema
+  custom_trace_data <- list()
+  custom_fields <- c("z_binary", "x_implicit", "y_implicit", "lazy_tooltip")
+
+  for (i in seq_along(traces)) {
+    trace_custom <- list()
+    for (field in custom_fields) {
+      if (!is.null(traces[[i]][[field]])) {
+        trace_custom[[field]] <- traces[[i]][[field]]
+        traces[[i]][[field]] <- NULL  # Remove from trace
+      }
+    }
+    if (length(trace_custom) > 0) {
+      custom_trace_data[[as.character(i)]] <- trace_custom
+    }
+  }
+
   out <- list(data = traces,
               layout = layout_setting,
               source = p@source,
               config = list(modeBarButtonsToRemove =
                               c("sendDataToCloud",
                                 "autoScale2d")))
+
+  # Add custom trace data separately (won't be validated by plotly)
+  if (length(custom_trace_data) > 0) {
+    out$iheatmapr_custom <- custom_trace_data
+  }
 
   # Add compact dendrograms if present (decoded in JS)
   if (length(compact_dendros) > 0) {

@@ -471,14 +471,126 @@ HTMLWidgets.widget({
 
     var graphDiv = document.getElementById(el.id);
 
+    // Merge custom iheatmapr data back into traces
+    // This data was separated to avoid Plotly validation stripping it
+    if (x.iheatmapr_custom) {
+      for (var traceIdx in x.iheatmapr_custom) {
+        var idx = parseInt(traceIdx) - 1;  // R is 1-indexed
+        if (x.data[idx]) {
+          var customData = x.iheatmapr_custom[traceIdx];
+          for (var key in customData) {
+            x.data[idx][key] = customData[key];
+          }
+        }
+      }
+      delete x.iheatmapr_custom;
+    }
+
     // Expand implicit coordinates (x_implicit/y_implicit -> full arrays)
     expandImplicitCoordinates(x.data);
 
+    // Helper to create event data sender for Shiny
+    var sendEventData = function(eventType) {
+      return function(eventData) {
+        if (eventData === undefined || !eventData.hasOwnProperty("points")) {
+          return null;
+        }
+        var d = eventData.points.map(function(pt) {
+          var obj = {
+                curveNumber: pt.curveNumber,
+                pointNumber: pt.pointNumber,
+                x: pt.x,
+                y: pt.y
+          };
+          // grab the trace corresponding to this point
+          var tr = x.data[pt.curveNumber];
+          // add on additional trace info, if it exists
+          var attachKey = function(keyName) {
+            if (tr.hasOwnProperty(keyName) && tr[keyName] !== null) {
+              if (typeof pt.pointNumber === "number") {
+                obj[keyName] = tr[keyName][pt.pointNumber];
+              } else {
+                obj[keyName] = tr[keyName][pt.pointNumber[0]][pt.pointNumber[1]];
+              }
+            }
+          };
+          attachKey("z");
+          attachKey("key");
+          return obj;
+        });
+        Shiny.onInputChange(
+          ".clientValue-" + eventType + "-" + x.source,
+          JSON.stringify(d)
+        );
+      };
+    };
+
+    // Debounce timeout to prevent infinite event loops when re-attaching handlers.
+    graphDiv._colorbarHandlerTimeout = null;
+
+    // Debounced function to re-attach colorbar hover handlers
+    var scheduleColorbarHandlers = function() {
+      if (graphDiv._colorbarHandlerTimeout) {
+        clearTimeout(graphDiv._colorbarHandlerTimeout);
+      }
+
+      graphDiv._colorbarHandlerTimeout = setTimeout(function() {
+        try {
+          addColorbarHoverHandlers(graphDiv, x.data);
+        } catch (error) {
+          console.error('Error attaching colorbar hover handlers:', error);
+        } finally {
+          graphDiv._colorbarHandlerTimeout = null;
+        }
+      }, 100);
+    };
+
+    // Function to set up event handlers after Plotly renders
+    function setupEventHandlers() {
+      // Re-attach colorbar hover handlers after plotly redraws
+      graphDiv.on('plotly_relayout', function(d) {
+        scheduleColorbarHandlers();
+
+        if (shinyMode) {
+          Shiny.onInputChange(
+            ".clientValue-" + "iheatmapr_relayout" + "-" + x.source,
+            JSON.stringify(d)
+          );
+        }
+      });
+
+      graphDiv.on('plotly_restyle', function(d) {
+        scheduleColorbarHandlers();
+      });
+
+      graphDiv.on('plotly_redraw', function() {
+        scheduleColorbarHandlers();
+      });
+
+      // send user input event data to shiny
+      if (shinyMode) {
+        graphDiv.on('plotly_hover', sendEventData('iheatmapr_hover'));
+        graphDiv.on('plotly_click', sendEventData('iheatmapr_click'));
+        graphDiv.on('plotly_selected', sendEventData('iheatmapr_selected'));
+        graphDiv.on('plotly_unhover', function(eventData) {
+          Shiny.onInputChange(".clientValue-iheatmapr_hover-" + x.source, null);
+        });
+        graphDiv.on('plotly_doubleclick', function(eventData) {
+          Shiny.onInputChange(".clientValue-iheatmapr_click-" + x.source, null);
+        });
+        // 'plotly_deselect' is code for doubleclick when in select mode
+        graphDiv.on('plotly_deselect', function(eventData) {
+          Shiny.onInputChange(".clientValue-iheatmapr_selected-" + x.source, null);
+          Shiny.onInputChange(".clientValue-iheatmapr_click-" + x.source, null);
+        });
+      }
+    }
+
     // Function to complete rendering after all data is decoded
     function completeRender() {
-      // if no plot exists yet, create one with a particular configuration
-      if (!instance.plotly) {
-        Plotly.plot(graphDiv, x.data, x.layout, x.config);
+      // Use Plotly.newPlot for both initial and subsequent renders
+      // Note: Plotly.plot was deprecated in Plotly.js 2.x in favor of Plotly.newPlot
+      Plotly.newPlot(graphDiv, x.data, x.layout, x.config).then(function() {
         instance.plotly = true;
         instance.autosize = x.layout.autosize;
 
@@ -487,15 +599,10 @@ HTMLWidgets.widget({
 
         // Set up lazy tooltip handlers for on-demand tooltip generation
         setupLazyTooltipHandlers(graphDiv, x.data);
-      } else {
-        Plotly.newPlot(graphDiv, x.data, x.layout);
 
-        // Add colorbar hover handlers after re-rendering
-        addColorbarHoverHandlers(graphDiv, x.data);
-
-        // Set up lazy tooltip handlers for on-demand tooltip generation
-        setupLazyTooltipHandlers(graphDiv, x.data);
-      }
+        // Set up event handlers (must be after Plotly renders)
+        setupEventHandlers();
+      });
     }
 
     // Check if we need async decoding (compressed data or compact dendrograms)
@@ -534,101 +641,6 @@ HTMLWidgets.widget({
       // Sync path: decode uncompressed data and render immediately
       x.data = decodeBinaryTraces(x.data);
       completeRender();
-    }
-
-    sendEventData = function(eventType) {
-      return function(eventData) {
-        if (eventData === undefined || !eventData.hasOwnProperty("points")) {
-          return null;
-        }
-        var d = eventData.points.map(function(pt) {
-          var obj = {
-                curveNumber: pt.curveNumber,
-                pointNumber: pt.pointNumber,
-                x: pt.x,
-                y: pt.y
-          };
-          // grab the trace corresponding to this point
-          var tr = x.data[pt.curveNumber];
-          // add on additional trace info, if it exists
-          attachKey = function(keyName) {
-            if (tr.hasOwnProperty(keyName) && tr[keyName] !== null) {
-              if (typeof pt.pointNumber === "number") {
-                obj[keyName] = tr[keyName][pt.pointNumber];
-              } else {
-                obj[keyName] = tr[keyName][pt.pointNumber[0]][pt.pointNumber[1]];
-              }// TODO: can pointNumber be 3D?
-            }
-          };
-          attachKey("z");
-          attachKey("key");
-          return obj;
-        });
-        Shiny.onInputChange(
-          ".clientValue-" + eventType + "-" + x.source,
-          JSON.stringify(d)
-        );
-      };
-    };
-
-    // Debounce timeout to prevent infinite event loops when re-attaching handlers.
-    // Store on graphDiv so destroy method can clear it.
-    graphDiv._colorbarHandlerTimeout = null;
-
-    // Debounced function to re-attach colorbar hover handlers
-    var scheduleColorbarHandlers = function() {
-      if (graphDiv._colorbarHandlerTimeout) {
-        clearTimeout(graphDiv._colorbarHandlerTimeout);
-      }
-
-      // Delay handler re-attachment to let DOM settle and prevent event loops
-      graphDiv._colorbarHandlerTimeout = setTimeout(function() {
-        try {
-          addColorbarHoverHandlers(graphDiv, x.data);
-        } catch (error) {
-          console.error('Error attaching colorbar hover handlers:', error);
-        } finally {
-          graphDiv._colorbarHandlerTimeout = null;
-        }
-      }, 100);
-    };
-
-    // Re-attach colorbar hover handlers after plotly redraws
-    graphDiv.on('plotly_relayout', function(d) {
-      scheduleColorbarHandlers();
-
-      if (shinyMode) {
-        Shiny.onInputChange(
-          ".clientValue-" + "iheatmapr_relayout" + "-" + x.source,
-          JSON.stringify(d)
-        );
-      }
-    });
-
-    graphDiv.on('plotly_restyle', function(d) {
-      scheduleColorbarHandlers();
-    });
-
-    graphDiv.on('plotly_redraw', function() {
-      scheduleColorbarHandlers();
-    });
-
-    // send user input event data to shiny
-    if (shinyMode) {
-      graphDiv.on('plotly_hover', sendEventData('iheatmapr_hover'));
-      graphDiv.on('plotly_click', sendEventData('iheatmapr_click'));
-      graphDiv.on('plotly_selected', sendEventData('iheatmapr_selected'));
-      graphDiv.on('plotly_unhover', function(eventData) {
-        Shiny.onInputChange(".clientValue-iheatmapr_hover-" + x.source, null);
-      });
-      graphDiv.on('plotly_doubleclick', function(eventData) {
-        Shiny.onInputChange(".clientValue-iheatmapr_click-" + x.source, null);
-      });
-      // 'plotly_deselect' is code for doubleclick when in select mode
-      graphDiv.on('plotly_deselect', function(eventData) {
-        Shiny.onInputChange(".clientValue-iheatmapr_selected-" + x.source, null);
-        Shiny.onInputChange(".clientValue-iheatmapr_click-" + x.source, null);
-      });
     }
 
     // Helper function to create/show tooltip for colorbar labels

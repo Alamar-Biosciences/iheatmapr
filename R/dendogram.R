@@ -114,35 +114,46 @@ setMethod("make_shapes", signature = c(x = "Dendrogram"),
 
 
 #' add_row_dendro
-#' 
-#' Adds row dendrogram to iheatmap object
+#'
+#' Adds row dendrogram to iheatmap object. Optionally adds cluster group
+#' annotation if k is specified.
 #' @param p iheatmap object
 #' @param dendro hclust object
-#' @param reorder reorder rows based on dendrogram order?  
+#' @param reorder reorder rows based on dendrogram order?
 #' @param side side of plot on which to add dendrogram
 #' @param size relative size of dendrogram (relative to the main heatmap)
-#' @param buffer amount of space to leave empty before this plot, relative to 
-#' size of first heatmap 
-#' @param xname internal  name of xaxis
+#' @param buffer amount of space to leave empty before this plot, relative to
+#' size of first heatmap
+#' @param xname internal name of xaxis
 #' @param yname internal name of yaxis
 #' @param sname internal name of shapes
-#' 
-#' @return \code{\link{Iheatmap-class}} object, which can be printed to generate 
+#' @param name name of colorbar indicating cluster membership (required if k is
+#' specified)
+#' @param k number of clusters to cut the dendrogram into
+#' @param colors colors to use for annotation of grouping
+#' @param show_colorbar show the colorbar for cluster membership
+#' @param tooltip tooltip options for cluster annotation, see
+#' \code{\link{setup_tooltip_options}}
+#'
+#' @return \code{\link{Iheatmap-class}} object, which can be printed to generate
 #' an interactive graphic
 #' @export
 #' @author Alicia Schep
 #' @rdname add_row_dendro
 #' @name add_row_dendro
 #' @aliases add_row_dendro,Iheatmap,hclust-method
-#' @seealso \code{\link{add_row_clustering}}, \code{\link{iheatmap}}, 
+#' @seealso \code{\link{add_row_clustering}}, \code{\link{iheatmap}},
 #' \code{\link{add_col_dendro}}
-#' @examples 
-#' 
-#' mat <- matrix(rnorm(20), ncol = 5, nrow = 4)  
+#' @examples
+#'
+#' mat <- matrix(rnorm(20), ncol = 5, nrow = 4)
 #' dend <- hclust(dist(mat))
 #' hm <- iheatmap(mat) %>% add_row_dendro(dend)
-#' 
-#' # Print heatmap if interactive session 
+#'
+#' # With cluster annotation
+#' hm2 <- iheatmap(mat) %>% add_row_dendro(dend, k = 2, name = "Clusters")
+#'
+#' # Print heatmap if interactive session
 #' if (interactive()) hm 
 setMethod(add_row_dendro, c(p = "Iheatmap", dendro = "hclust"),
           function(p,
@@ -153,7 +164,12 @@ setMethod(add_row_dendro, c(p = "Iheatmap", dendro = "hclust"),
                    buffer = 0.005,
                    xname = NULL,
                    yname = current_yaxis(p),
-                   sname = "row_dendro"){
+                   sname = "row_dendro",
+                   name = NULL,
+                   k = NULL,
+                   colors = NULL,
+                   show_colorbar = TRUE,
+                   tooltip = setup_tooltip_options()){
 
             side <- match.arg(side)
             new_x <- new_xaxis(p, yname, layout = dendro_layout)
@@ -167,7 +183,21 @@ setMethod(add_row_dendro, c(p = "Iheatmap", dendro = "hclust"),
                             side = side)
 
             if (reorder) axis_order(yaxes(p)[[yname]]) <- dendro$order
-            
+
+            # Add cluster groups annotation if k is specified
+            if (!is.null(k) && !is.null(name)) {
+              groups <- stats::cutree(dendro, k = k)
+              if (is.null(colors)) colors <- pick_discrete_colors(groups, p)
+              p <- add_row_groups(p,
+                                  groups,
+                                  name = name,
+                                  colors = colors,
+                                  side = side,
+                                  show_colorbar = show_colorbar,
+                                  show_title = FALSE,
+                                  tooltip = tooltip)
+            }
+
             p <- add_axis(p,
                           new_x,
                           xname = xname,
@@ -178,39 +208,50 @@ setMethod(add_row_dendro, c(p = "Iheatmap", dendro = "hclust"),
             p <-  add_shape(p, new_shape, sname)
             validObject(p)
             p
-            
+
           })
 
 #' add_col_dendro
-#' 
-#' Adds column dendrogram to iheatmap object
+#'
+#' Adds column dendrogram to iheatmap object. Optionally adds cluster group
+#' annotation if k is specified.
 #' @param p iheatmap object
 #' @param dendro hclust object
-#' @param reorder reorder rows based on dendrogram order?  
+#' @param reorder reorder columns based on dendrogram order?
 #' @param side side of plot on which to add dendro
 #' @param size relative size of dendrogram (relative to the main heatmap)
-#' @param buffer amount of space to leave empty before this plot, relative to 
+#' @param buffer amount of space to leave empty before this plot, relative to
 #' size of first heatmap
 #' @param xname internal name of xaxis
 #' @param yname internal name of yaxis
 #' @param sname internal name of shape
-#' 
-#' @return \code{\link{Iheatmap-class}} object, which can be printed to generate 
+#' @param name name of colorbar indicating cluster membership (required if k is
+#' specified)
+#' @param k number of clusters to cut the dendrogram into
+#' @param colors colors to use for annotation of grouping
+#' @param show_colorbar show the colorbar for cluster membership
+#' @param tooltip tooltip options for cluster annotation, see
+#' \code{\link{setup_tooltip_options}}
+#'
+#' @return \code{\link{Iheatmap-class}} object, which can be printed to generate
 #' an interactive graphic
 #' @export
 #' @author Alicia Schep
 #' @rdname add_col_dendro
 #' @name add_col_dendro
 #' @aliases add_col_dendro,Iheatmap,hclust-method
-#' @seealso \code{\link{add_col_clustering}}, \code{\link{iheatmap}}, 
+#' @seealso \code{\link{add_col_clustering}}, \code{\link{iheatmap}},
 #' \code{\link{add_row_dendro}}
-#' @examples 
-#' 
-#' mat <- matrix(rnorm(20), ncol = 5, nrow = 4)  
+#' @examples
+#'
+#' mat <- matrix(rnorm(20), ncol = 5, nrow = 4)
 #' dend <- hclust(dist(t(mat)))
 #' hm <- iheatmap(mat) %>% add_col_dendro(dend)
-#' 
-#' # Print heatmap if interactive session 
+#'
+#' # With cluster annotation
+#' hm2 <- iheatmap(mat) %>% add_col_dendro(dend, k = 2, name = "Clusters")
+#'
+#' # Print heatmap if interactive session
 #' if (interactive()) hm 
 setMethod(add_col_dendro, c(p = "Iheatmap", dendro = "hclust"),
           function(p,
@@ -221,7 +262,12 @@ setMethod(add_col_dendro, c(p = "Iheatmap", dendro = "hclust"),
                    buffer = 0.005,
                    xname = current_xaxis(p),
                    yname = NULL,
-                   sname = "col_dendro"){
+                   sname = "col_dendro",
+                   name = NULL,
+                   k = NULL,
+                   colors = NULL,
+                   show_colorbar = TRUE,
+                   tooltip = setup_tooltip_options()){
 
             side <- match.arg(side)
             new_y <- new_yaxis(p, xname, layout = dendro_layout)
@@ -235,8 +281,22 @@ setMethod(add_col_dendro, c(p = "Iheatmap", dendro = "hclust"),
                              side = side)
 
             if (reorder) axis_order(xaxes(p)[[xname]]) <- dendro$order
-            
-            p <- add_axis(p, 
+
+            # Add cluster groups annotation if k is specified
+            if (!is.null(k) && !is.null(name)) {
+              groups <- stats::cutree(dendro, k = k)
+              if (is.null(colors)) colors <- pick_discrete_colors(groups, p)
+              p <- add_col_groups(p,
+                                  groups,
+                                  name = name,
+                                  colors = colors,
+                                  side = side,
+                                  show_colorbar = show_colorbar,
+                                  show_title = FALSE,
+                                  tooltip = tooltip)
+            }
+
+            p <- add_axis(p,
                           new_y,
                           xname = xname,
                           yname = yname,
@@ -246,5 +306,5 @@ setMethod(add_col_dendro, c(p = "Iheatmap", dendro = "hclust"),
             p <-  add_shape(p, new_shape, sname)
             validObject(p)
             p
-            
+
           })
