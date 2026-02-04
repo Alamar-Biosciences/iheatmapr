@@ -296,18 +296,37 @@ function generateLazyTooltip(trace, rowIdx, colIdx) {
 
   var parts = [];
 
+  // Helper to add run info after sample label
+  // Check both lazy_tooltip.run_mapping and trace.run_mapping for compatibility
+  function addRunInfo(sampleName) {
+    var runMapping = lt.run_mapping || trace.run_mapping;
+    if (sampleName && runMapping && runMapping[sampleName]) {
+      parts.push('Run: ' + sanitizeText(runMapping[sampleName]));
+    }
+  }
+
   // Check bounds for row labels
   if (lt.show_row && lt.row_labels &&
       rowIdx < lt.row_labels.length &&
       lt.row_labels[rowIdx] !== undefined) {
-    parts.push(sanitizeText(lt.prepend_row) + sanitizeText(lt.row_labels[rowIdx]));
+    var rowLabel = sanitizeText(lt.row_labels[rowIdx]);
+    parts.push(sanitizeText(lt.prepend_row) + rowLabel);
+    // Add run info right after sample label
+    if (lt.prepend_row && lt.prepend_row.indexOf('Sample') !== -1) {
+      addRunInfo(lt.row_labels[rowIdx]);
+    }
   }
 
   // Check bounds for col labels
   if (lt.show_col && lt.col_labels &&
       colIdx < lt.col_labels.length &&
       lt.col_labels[colIdx] !== undefined) {
-    parts.push(sanitizeText(lt.prepend_col) + sanitizeText(lt.col_labels[colIdx]));
+    var colLabel = sanitizeText(lt.col_labels[colIdx]);
+    parts.push(sanitizeText(lt.prepend_col) + colLabel);
+    // Add run info right after sample label
+    if (lt.prepend_col && lt.prepend_col.indexOf('Sample') !== -1) {
+      addRunInfo(lt.col_labels[colIdx]);
+    }
   }
 
   // Read values from trace.z matrix (saves ~60% space vs storing in lazy_tooltip)
