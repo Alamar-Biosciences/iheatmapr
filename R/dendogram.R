@@ -184,7 +184,18 @@ setMethod(add_row_dendro, c(p = "Iheatmap", dendro = "hclust"),
 
             if (reorder) axis_order(yaxes(p)[[yname]]) <- dendro$order
 
+            # Add dendrogram axis FIRST so cluster groups get a separate axis
+            p <- add_axis(p,
+                          new_x,
+                          xname = xname,
+                          yname = yname,
+                          size = size,
+                          buffer = buffer,
+                          side = side)
+            p <- add_shape(p, new_shape, sname)
+
             # Add cluster groups annotation if k is specified
+            # This must come AFTER dendrogram axis is added so groups get their own axis
             if (!is.null(k) && !is.null(name)) {
               groups <- stats::cutree(dendro, k = k)
               if (is.null(colors)) colors <- pick_discrete_colors(groups, p)
@@ -197,15 +208,6 @@ setMethod(add_row_dendro, c(p = "Iheatmap", dendro = "hclust"),
                                   show_title = FALSE,
                                   tooltip = tooltip)
             }
-
-            p <- add_axis(p,
-                          new_x,
-                          xname = xname,
-                          yname = yname,
-                          size = size,
-                          buffer = buffer,
-                          side = side)
-            p <-  add_shape(p, new_shape, sname)
             validObject(p)
             p
 
@@ -282,7 +284,18 @@ setMethod(add_col_dendro, c(p = "Iheatmap", dendro = "hclust"),
 
             if (reorder) axis_order(xaxes(p)[[xname]]) <- dendro$order
 
+            # Add dendrogram axis FIRST so cluster groups get a separate axis
+            p <- add_axis(p,
+                          new_y,
+                          xname = xname,
+                          yname = yname,
+                          size = size,
+                          buffer = buffer,
+                          side = side)
+            p <- add_shape(p, new_shape, sname)
+
             # Add cluster groups annotation if k is specified
+            # This must come AFTER dendrogram axis is added so groups get their own axis
             if (!is.null(k) && !is.null(name)) {
               groups <- stats::cutree(dendro, k = k)
               if (is.null(colors)) colors <- pick_discrete_colors(groups, p)
@@ -295,15 +308,6 @@ setMethod(add_col_dendro, c(p = "Iheatmap", dendro = "hclust"),
                                   show_title = FALSE,
                                   tooltip = tooltip)
             }
-
-            p <- add_axis(p,
-                          new_y,
-                          xname = xname,
-                          yname = yname,
-                          size = size,
-                          buffer = buffer,
-                          side = side)
-            p <-  add_shape(p, new_shape, sname)
             validObject(p)
             p
 
