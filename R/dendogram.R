@@ -172,30 +172,11 @@ setMethod(add_row_dendro, c(p = "Iheatmap", dendro = "hclust"),
                    tooltip = setup_tooltip_options()){
 
             side <- match.arg(side)
-            new_x <- new_xaxis(p, yname, layout = dendro_layout)
-
-            if (is.null(xname)) xname <- id(new_x)
-
-            new_shape <- new("Dendrogram",
-                            xaxis = xname,
-                            yaxis = yname,
-                            data = dendro,
-                            side = side)
 
             if (reorder) axis_order(yaxes(p)[[yname]]) <- dendro$order
 
-            # Add dendrogram axis FIRST so cluster groups get a separate axis
-            p <- add_axis(p,
-                          new_x,
-                          xname = xname,
-                          yname = yname,
-                          size = size,
-                          buffer = buffer,
-                          side = side)
-            p <- add_shape(p, new_shape, sname)
-
-            # Add cluster groups annotation if k is specified
-            # This must come AFTER dendrogram axis is added so groups get their own axis
+            # Add cluster groups FIRST (visually closer to heatmap)
+            # This also ensures cluster bar gets its own axis ID before dendrogram
             if (!is.null(k) && !is.null(name)) {
               groups <- stats::cutree(dendro, k = k)
               if (is.null(colors)) colors <- pick_discrete_colors(groups, p)
@@ -208,6 +189,26 @@ setMethod(add_row_dendro, c(p = "Iheatmap", dendro = "hclust"),
                                   show_title = FALSE,
                                   tooltip = tooltip)
             }
+
+            # Create and add dendrogram AFTER cluster groups
+            # This ensures dendrogram gets a different axis ID and is visually further left
+            new_x <- new_xaxis(p, yname, layout = dendro_layout)
+            if (is.null(xname)) xname <- id(new_x)
+
+            new_shape <- new("Dendrogram",
+                            xaxis = xname,
+                            yaxis = yname,
+                            data = dendro,
+                            side = side)
+
+            p <- add_axis(p,
+                          new_x,
+                          xname = xname,
+                          yname = yname,
+                          size = size,
+                          buffer = buffer,
+                          side = side)
+            p <- add_shape(p, new_shape, sname)
             validObject(p)
             p
 
@@ -272,30 +273,11 @@ setMethod(add_col_dendro, c(p = "Iheatmap", dendro = "hclust"),
                    tooltip = setup_tooltip_options()){
 
             side <- match.arg(side)
-            new_y <- new_yaxis(p, xname, layout = dendro_layout)
-
-            if (is.null(yname)) yname <- id(new_y)
-
-            new_shape <- new("Dendrogram",
-                             xaxis = xname,
-                             yaxis = yname,
-                             data = dendro,
-                             side = side)
 
             if (reorder) axis_order(xaxes(p)[[xname]]) <- dendro$order
 
-            # Add dendrogram axis FIRST so cluster groups get a separate axis
-            p <- add_axis(p,
-                          new_y,
-                          xname = xname,
-                          yname = yname,
-                          size = size,
-                          buffer = buffer,
-                          side = side)
-            p <- add_shape(p, new_shape, sname)
-
-            # Add cluster groups annotation if k is specified
-            # This must come AFTER dendrogram axis is added so groups get their own axis
+            # Add cluster groups FIRST (visually closer to heatmap)
+            # This also ensures cluster bar gets its own axis ID before dendrogram
             if (!is.null(k) && !is.null(name)) {
               groups <- stats::cutree(dendro, k = k)
               if (is.null(colors)) colors <- pick_discrete_colors(groups, p)
@@ -308,6 +290,26 @@ setMethod(add_col_dendro, c(p = "Iheatmap", dendro = "hclust"),
                                   show_title = FALSE,
                                   tooltip = tooltip)
             }
+
+            # Create and add dendrogram AFTER cluster groups
+            # This ensures dendrogram gets a different axis ID and is visually further out
+            new_y <- new_yaxis(p, xname, layout = dendro_layout)
+            if (is.null(yname)) yname <- id(new_y)
+
+            new_shape <- new("Dendrogram",
+                             xaxis = xname,
+                             yaxis = yname,
+                             data = dendro,
+                             side = side)
+
+            p <- add_axis(p,
+                          new_y,
+                          xname = xname,
+                          yname = yname,
+                          size = size,
+                          buffer = buffer,
+                          side = side)
+            p <- add_shape(p, new_shape, sname)
             validObject(p)
             p
 
