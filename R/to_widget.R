@@ -1,3 +1,114 @@
+# Threshold for using binary encoding (number of cells)
+# Matrices larger than this will be encoded as base64 binary
+BINARY_ENCODING_THRESHOLD <- 100000
+
+#' Convert double vector to float32 raw bytes
+#' @param x numeric vector (NA values should be handled before calling)
+#' @return raw vector containing float32 bytes
+#' @details
+#' - Inf/-Inf values are clamped to float32 max/min (acceptable for visualization)
+#' - NaN values pass through as NaN
+#' - Uses in-memory raw connection for efficiency
+#' @keywords internal
+double_to_float32_raw <- function(x) {
+  # Clamp to float32 range to avoid overflow (Inf becomes float32 max)
+  x <- pmax(pmin(x, 3.4028235e+38), -3.4028235e+38)
+
+  # Use in-memory raw connection (faster than temp file)
+  con <- rawConnection(raw(0), "wb")
+  on.exit(close(con), add = TRUE)
+  writeBin(x, con, size = 4)
+
+  rawConnectionValue(con)
+}
+
+#' Encode a numeric matrix as base64 binary
+#' @param mat A numeric matrix
+#' @param use_float32 Use 32-bit floats instead of 64-bit (default TRUE, halves size)
+#' @param compress Use gzip compression (default FALSE). Enable for data with
+#'   compressible patterns. Note: requires browser with DecompressionStream API
+#'   (Chrome 80+, Firefox 113+, Safari 16.4+).
+#' @return A list with base64 data, dimensions, NA positions, and encoding metadata
+#' @keywords internal
+#' @importFrom base64enc base64encode
+encode_matrix_binary <- function(mat, use_float32 = TRUE, compress = FALSE) {
+
+  # Validate matrix
+  if (!is.matrix(mat) || nrow(mat) == 0 || ncol(mat) == 0) {
+    stop("encode_matrix_binary requires a non-empty matrix")
+  }
+
+  # Track NA positions (0-indexed for JavaScript)
+  na_mask <- is.na(mat)
+  has_na <- any(na_mask)
+
+  # Replace NA with 0 for binary encoding (will be restored in JS)
+  mat_clean <- mat
+  if (has_na) {
+    mat_clean[na_mask] <- 0
+  }
+
+  # Convert matrix to raw bytes (column-major order)
+  if (use_float32) {
+    raw_data <- double_to_float32_raw(as.vector(mat_clean))
+    dtype <- "float32"
+  } else {
+    raw_data <- writeBin(as.vector(mat_clean), raw(), size = 8)
+    dtype <- "float64"
+  }
+
+  # Apply gzip compression if requested
+  if (compress) {
+    raw_data <- memCompress(raw_data, type = "gzip")
+    encoding <- "base64-gzip"
+  } else {
+    encoding <- "base64"
+  }
+
+  # Encode as base64
+  b64_data <- base64enc::base64encode(raw_data)
+
+  result <- list(
+    data_binary = b64_data,
+    dims = dim(mat),
+    dtype = dtype,
+    encoding = encoding
+  )
+
+  # Include NA positions if present
+  if (has_na) {
+    result$na_positions <- I(which(na_mask) - 1L)  # 0-indexed for JS
+  }
+
+  result
+}
+
+#' Check if a trace should use binary encoding
+#' @param trace A plotly trace list
+#' @return TRUE if the trace has a large z matrix
+#' @keywords internal
+should_use_binary <- function(trace) {
+  if (is.null(trace$z)) return(FALSE)
+  if (!is.matrix(trace$z)) return(FALSE)
+  # Check for valid dimensions
+  if (nrow(trace$z) == 0 || ncol(trace$z) == 0) return(FALSE)
+  length(trace$z) > BINARY_ENCODING_THRESHOLD
+}
+
+#' Convert trace z matrix to binary if large enough
+#' @param trace A plotly trace list
+#' @return The trace with z optionally converted to binary
+#' @keywords internal
+maybe_encode_trace_binary <- function(trace) {
+  if (should_use_binary(trace)) {
+    # Store original z matrix as binary
+    trace$z_binary <- encode_matrix_binary(trace$z)
+    # Replace z with placeholder (will be decoded in JS)
+    trace$z <- NULL
+  }
+  trace
+}
+
 #' @name to_plotly
 #' @export
 to_plotly_list <- function(p){
@@ -7,11 +118,25 @@ to_plotly_list <- function(p){
                           yaxes = yaxes(p),
                           colorbars = p@colorbars,
                           colorbar_grid = p@colorbar_grid))
-  shapes <- unlist(unname(lapply(p@shapes,
+  all_shapes <- unname(lapply(p@shapes,
                                  make_shapes,
                                  xaxes = xaxes(p),
-                                 yaxes = yaxes(p))),
-                   recursive = FALSE, use.names = FALSE)
+                                 yaxes = yaxes(p)))
+
+  # Separate compact dendrograms from regular shapes
+  compact_dendros <- list()
+  regular_shapes <- list()
+
+  for (shape_list in all_shapes) {
+    if (!is.null(shape_list$dendro_compact)) {
+      # This is a compact dendrogram
+      compact_dendros <- c(compact_dendros, list(shape_list$dendro_compact))
+    } else if (is.list(shape_list)) {
+      # Regular shapes (list of shape objects)
+      regular_shapes <- c(regular_shapes, shape_list)
+    }
+  }
+
   annotations <- unlist(unname(lapply(p@annotations,
                                       make_annotations,
                                       xaxes = xaxes(p),
@@ -20,8 +145,8 @@ to_plotly_list <- function(p){
   layout_setting <- c(get_layout(p@xaxes),
                       get_layout(p@yaxes),
                       p@layout)
-  if (length(shapes) && !is.null(unlist(shapes))){
-    layout_setting$shapes <- shapes
+  if (length(regular_shapes) && !is.null(unlist(regular_shapes))){
+    layout_setting$shapes <- regular_shapes
   }
   if (length(annotations) && !is.null(unlist(annotations))){
     layout_setting$annotations <- annotations
@@ -30,14 +155,48 @@ to_plotly_list <- function(p){
     layout_setting$legend$x <- get_legend_position(p)
     layout_setting$legend$xanchor <- "left"
   }
+  # Apply binary encoding to large matrices
+  traces <- lapply(traces, maybe_encode_trace_binary)
+
+  # Extract custom iheatmapr fields from traces to avoid Plotly validation stripping them
+  # These fields are not standard Plotly attributes and would be removed by plotly's schema
+  custom_trace_data <- list()
+  custom_fields <- c("z_binary", "x_implicit", "y_implicit", "lazy_tooltip")
+
+  for (i in seq_along(traces)) {
+    trace_custom <- list()
+    for (field in custom_fields) {
+      if (!is.null(traces[[i]][[field]])) {
+        trace_custom[[field]] <- traces[[i]][[field]]
+        traces[[i]][[field]] <- NULL  # Remove from trace
+      }
+    }
+    if (length(trace_custom) > 0) {
+      custom_trace_data[[as.character(i)]] <- trace_custom
+    }
+  }
+
   out <- list(data = traces,
               layout = layout_setting,
               source = p@source,
-              config = list(modeBarButtonsToRemove = 
+              config = list(modeBarButtonsToRemove =
                               c("sendDataToCloud",
                                 "autoScale2d")))
+
+  # Add custom trace data separately (won't be validated by plotly)
+  if (length(custom_trace_data) > 0) {
+    out$iheatmapr_custom <- custom_trace_data
+  }
+
+  # Add compact dendrograms if present (decoded in JS)
+  if (length(compact_dendros) > 0) {
+    out$compact_dendrograms <- compact_dendros
+  }
+
+  # Use reduced precision (6 digits) for faster JSON serialization
+  # Binary-encoded matrices don't need high precision in JSON
   attr(out, "TOJSON_FUNC") <- function(x, ...) {
-    toJSON(x, digits = 50, auto_unbox = TRUE, force = TRUE,
+    toJSON(x, digits = 6, auto_unbox = TRUE, force = TRUE,
            null = "null", na = "null", ...)
   }
   out
