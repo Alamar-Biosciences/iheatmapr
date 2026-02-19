@@ -97,6 +97,8 @@ function restoreNAValues(matrix, naPositions, nrows) {
 }
 
 // Decode binary-encoded matrix from trace (async for gzip support)
+// Returns { matrix, floatArray, dims, naSet } so the caller can store the
+// Float32Array on the trace for post-render z-array release.
 async function decodeBinaryMatrixAsync(binaryData) {
   if (!binaryData || !binaryData.data_binary || !binaryData.dims) {
     return null;
@@ -121,16 +123,23 @@ async function decodeBinaryMatrixAsync(binaryData) {
   // Convert to appropriate typed array
   var floatArray = bufferToTypedArray(decodedBytes, dtype);
 
+  // Build NA position Set for O(1) lookup after z-array release
+  var naSet = null;
+  if (binaryData.na_positions && binaryData.na_positions.length > 0) {
+    naSet = new Set(binaryData.na_positions);
+  }
+
   // Convert to 2D matrix
   var matrix = flatArrayToMatrix(floatArray, nrows, ncols);
 
   // Restore NA values
   restoreNAValues(matrix, binaryData.na_positions, nrows);
 
-  return matrix;
+  return { matrix: matrix, floatArray: floatArray, dims: [nrows, ncols], naSet: naSet };
 }
 
 // Synchronous fallback for non-compressed data
+// Returns { matrix, floatArray, dims, naSet } or null (gzip needs async path)
 function decodeBinaryMatrixSync(binaryData) {
   if (!binaryData || !binaryData.data_binary || !binaryData.dims) {
     return null;
@@ -149,10 +158,16 @@ function decodeBinaryMatrixSync(binaryData) {
 
   var rawBytes = base64ToUint8Array(binaryData.data_binary);
   var floatArray = bufferToTypedArray(rawBytes, dtype);
+
+  var naSet = null;
+  if (binaryData.na_positions && binaryData.na_positions.length > 0) {
+    naSet = new Set(binaryData.na_positions);
+  }
+
   var matrix = flatArrayToMatrix(floatArray, nrows, ncols);
   restoreNAValues(matrix, binaryData.na_positions, nrows);
 
-  return matrix;
+  return { matrix: matrix, floatArray: floatArray, dims: [nrows, ncols], naSet: naSet };
 }
 
 // Process traces to decode any binary-encoded matrices (async)
@@ -164,8 +179,13 @@ async function decodeBinaryTracesAsync(data) {
     if (trace.z_binary) {
       // IIFE to capture trace reference in closure
       (function(t) {
-        var promise = decodeBinaryMatrixAsync(t.z_binary).then(function(matrix) {
-          t.z = matrix;
+        var promise = decodeBinaryMatrixAsync(t.z_binary).then(function(result) {
+          if (result === null) return;
+          t.z = result.matrix;
+          // Store Float32Array backing for post-render z-array release
+          t._z_float32 = result.floatArray;
+          t._z_dims = result.dims;
+          t._z_na = result.naSet;
           delete t.z_binary;
         });
         promises.push(promise);
@@ -182,9 +202,13 @@ function decodeBinaryTraces(data) {
   for (var i = 0; i < data.length; i++) {
     var trace = data[i];
     if (trace.z_binary) {
-      var matrix = decodeBinaryMatrixSync(trace.z_binary);
-      if (matrix !== null) {
-        trace.z = matrix;
+      var result = decodeBinaryMatrixSync(trace.z_binary);
+      if (result !== null) {
+        trace.z = result.matrix;
+        // Store Float32Array backing for post-render z-array release
+        trace._z_float32 = result.floatArray;
+        trace._z_dims = result.dims;
+        trace._z_na = result.naSet;
         delete trace.z_binary;
       }
       // If null (gzip), leave z_binary for async processing
@@ -329,12 +353,29 @@ function generateLazyTooltip(trace, rowIdx, colIdx) {
     }
   }
 
-  // Read values from trace.z matrix (saves ~60% space vs storing in lazy_tooltip)
-  if (lt.show_value && trace.z &&
-      rowIdx < trace.z.length &&
-      trace.z[rowIdx] &&
-      colIdx < trace.z[rowIdx].length) {
-    var value = trace.z[rowIdx][colIdx];
+  // Read values — prefer the lightweight Float32Array backing if the 2D z-array
+  // was released after Plotly consumed it (Optimization 2).
+  if (lt.show_value) {
+    var value;
+    if (trace._z_float32 && trace._z_dims) {
+      // Column-major layout from R: flatIdx = col * nrows + row
+      var nrows = trace._z_dims[0];
+      var ncols = trace._z_dims[1];
+      if (rowIdx >= 0 && rowIdx < nrows && colIdx >= 0 && colIdx < ncols) {
+        var flatIdx = colIdx * nrows + rowIdx;
+        if (trace._z_na && trace._z_na.has(flatIdx)) {
+          value = null;
+        } else {
+          value = trace._z_float32[flatIdx];
+        }
+      }
+    } else if (trace.z &&
+               rowIdx < trace.z.length &&
+               trace.z[rowIdx] &&
+               colIdx < trace.z[rowIdx].length) {
+      // Fallback for non-binary traces
+      value = trace.z[rowIdx][colIdx];
+    }
     if (value !== null && value !== undefined) {
       // Format to 3 significant figures for display
       var formatted = typeof value === 'number' ? value.toPrecision(4) : value;
@@ -398,14 +439,19 @@ function setupLazyTooltipHandlers(graphDiv, data) {
 
   if (!hasLazyTooltips) return;
 
-  // Clean up any existing lazy tooltip handlers to prevent memory leaks
+  // Clean up only our lazy tooltip handlers (not all plotly_hover/unhover listeners,
+  // which would destroy Shiny event handlers registered by setupEventHandlers)
   if (graphDiv._lazyTooltipHandlers) {
     if (graphDiv._lazyTooltipHandlers.mousemove) {
       graphDiv.removeEventListener('mousemove', graphDiv._lazyTooltipHandlers.mousemove);
     }
     try {
-      graphDiv.removeAllListeners('plotly_hover');
-      graphDiv.removeAllListeners('plotly_unhover');
+      if (graphDiv._lazyTooltipHandlers.hover) {
+        graphDiv.removeListener('plotly_hover', graphDiv._lazyTooltipHandlers.hover);
+      }
+      if (graphDiv._lazyTooltipHandlers.unhover) {
+        graphDiv.removeListener('plotly_unhover', graphDiv._lazyTooltipHandlers.unhover);
+      }
     } catch (e) {
       // Ignore if listeners don't exist
     }
@@ -508,6 +554,11 @@ HTMLWidgets.widget({
     // Expand implicit coordinates (x_implicit/y_implicit -> full arrays)
     expandImplicitCoordinates(x.data);
 
+    // Store current data and source on instance so event handlers always
+    // reference latest values (not stale closures from first renderValue call)
+    instance.currentData = x.data;
+    instance.source = x.source;
+
     // Helper to create event data sender for Shiny
     var sendEventData = function(eventType) {
       return function(eventData) {
@@ -521,8 +572,9 @@ HTMLWidgets.widget({
                 x: pt.x,
                 y: pt.y
           };
-          // grab the trace corresponding to this point
-          var tr = x.data[pt.curveNumber];
+          // Use instance.currentData (not closed-over x.data) so that
+          // subsequent Plotly.react() re-renders update the data correctly
+          var tr = instance.currentData[pt.curveNumber];
           // add on additional trace info, if it exists
           var attachKey = function(keyName) {
             if (tr.hasOwnProperty(keyName) && tr[keyName] !== null) {
@@ -533,12 +585,28 @@ HTMLWidgets.widget({
               }
             }
           };
-          attachKey("z");
+          // For z: prefer Float32Array backing if the 2D z-array was released
+          if (tr._z_float32 && tr._z_dims && Array.isArray(pt.pointNumber)) {
+            var rowIdx = pt.pointNumber[0];
+            var colIdx = pt.pointNumber[1];
+            var zNrows = tr._z_dims[0];
+            var zNcols = tr._z_dims[1];
+            if (rowIdx >= 0 && rowIdx < zNrows && colIdx >= 0 && colIdx < zNcols) {
+              var flatIdx = colIdx * zNrows + rowIdx;
+              if (tr._z_na && tr._z_na.has(flatIdx)) {
+                obj.z = null;
+              } else {
+                obj.z = tr._z_float32[flatIdx];
+              }
+            }
+          } else {
+            attachKey("z");
+          }
           attachKey("key");
           return obj;
         });
         Shiny.onInputChange(
-          ".clientValue-" + eventType + "-" + x.source,
+          ".clientValue-" + eventType + "-" + instance.source,
           JSON.stringify(d)
         );
       };
@@ -555,7 +623,7 @@ HTMLWidgets.widget({
 
       graphDiv._colorbarHandlerTimeout = setTimeout(function() {
         try {
-          addColorbarHoverHandlers(graphDiv, x.data);
+          addColorbarHoverHandlers(graphDiv, instance.currentData);
         } catch (error) {
           console.error('Error attaching colorbar hover handlers:', error);
         } finally {
@@ -572,7 +640,7 @@ HTMLWidgets.widget({
 
         if (shinyMode) {
           Shiny.onInputChange(
-            ".clientValue-" + "iheatmapr_relayout" + "-" + x.source,
+            ".clientValue-" + "iheatmapr_relayout" + "-" + instance.source,
             JSON.stringify(d)
           );
         }
@@ -592,35 +660,62 @@ HTMLWidgets.widget({
         graphDiv.on('plotly_click', sendEventData('iheatmapr_click'));
         graphDiv.on('plotly_selected', sendEventData('iheatmapr_selected'));
         graphDiv.on('plotly_unhover', function(eventData) {
-          Shiny.onInputChange(".clientValue-iheatmapr_hover-" + x.source, null);
+          Shiny.onInputChange(".clientValue-iheatmapr_hover-" + instance.source, null);
         });
         graphDiv.on('plotly_doubleclick', function(eventData) {
-          Shiny.onInputChange(".clientValue-iheatmapr_click-" + x.source, null);
+          Shiny.onInputChange(".clientValue-iheatmapr_click-" + instance.source, null);
         });
         // 'plotly_deselect' is code for doubleclick when in select mode
         graphDiv.on('plotly_deselect', function(eventData) {
-          Shiny.onInputChange(".clientValue-iheatmapr_selected-" + x.source, null);
-          Shiny.onInputChange(".clientValue-iheatmapr_click-" + x.source, null);
+          Shiny.onInputChange(".clientValue-iheatmapr_selected-" + instance.source, null);
+          Shiny.onInputChange(".clientValue-iheatmapr_click-" + instance.source, null);
         });
       }
     }
 
     // Function to complete rendering after all data is decoded
     function completeRender() {
-      // Use Plotly.newPlot for both initial and subsequent renders
-      // Note: Plotly.plot was deprecated in Plotly.js 2.x in favor of Plotly.newPlot
-      Plotly.newPlot(graphDiv, x.data, x.layout, x.config).then(function() {
+      var isFirstRender = !instance.plotly;
+      // Use Plotly.react for subsequent renders to avoid full DOM teardown/rebuild,
+      // which eliminates the peak memory spike from old + new graph coexisting.
+      var renderFn = isFirstRender ? Plotly.newPlot : Plotly.react;
+
+      renderFn(graphDiv, x.data, x.layout, x.config).then(function() {
         instance.plotly = true;
         instance.autosize = x.layout.autosize;
 
+        // Release the 2D z-array on traces that have Float32Array backing.
+        // Plotly has already deep-copied z into _fullData/calcdata, so the
+        // iheatmapr copy is no longer needed. This frees ~13-40 MB at 6500x250.
+        for (var i = 0; i < x.data.length; i++) {
+          if (x.data[i]._z_float32) {
+            x.data[i].z = null;
+          }
+        }
+
+        // After Plotly.react, DOM is partially rebuilt — reset colorbar handler guards
+        // so they get re-attached to the new DOM elements
+        if (!isFirstRender) {
+          var cbGroups = graphDiv.querySelectorAll('[data-hover-handlers-attached]');
+          for (var i = 0; i < cbGroups.length; i++) {
+            cbGroups[i].removeAttribute('data-hover-handlers-attached');
+          }
+        }
+
         // Add colorbar hover handlers after rendering
-        addColorbarHoverHandlers(graphDiv, x.data);
+        addColorbarHoverHandlers(graphDiv, instance.currentData);
 
         // Set up lazy tooltip handlers for on-demand tooltip generation
-        setupLazyTooltipHandlers(graphDiv, x.data);
+        // (has internal cleanup, safe to call every render)
+        setupLazyTooltipHandlers(graphDiv, instance.currentData);
 
-        // Set up event handlers (must be after Plotly renders)
-        setupEventHandlers();
+        // Set up persistent event handlers on first render, or re-register
+        // if trace count changed (Plotly.react may internally purge+replot)
+        var prevTraceCount = instance.traceCount || 0;
+        instance.traceCount = x.data.length;
+        if (isFirstRender || prevTraceCount !== instance.traceCount) {
+          setupEventHandlers();
+        }
       });
     }
 
@@ -931,6 +1026,13 @@ HTMLWidgets.widget({
       var lazyTooltip = document.querySelector('.lazy-hover-tooltip');
       if (lazyTooltip) {
         lazyTooltip.remove();
+      }
+
+      // Purge Plotly graph state to free internal copies (_fullData, calcdata)
+      try {
+        Plotly.purge(graphDiv);
+      } catch (e) {
+        // Ignore errors if Plotly state doesn't exist
       }
     }
   }
