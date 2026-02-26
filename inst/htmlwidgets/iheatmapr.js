@@ -536,6 +536,20 @@ HTMLWidgets.widget({
 
     var graphDiv = document.getElementById(el.id);
 
+    // Hide during rendering to prevent flash of stale content.
+    // Uses opacity instead of visibility so Plotly's SVG text measurement
+    // (getBBox, getComputedTextLength) still works — visibility:hidden is
+    // inherited by SVG children and can cause legend labels to be dropped.
+    // The !important ensures withSpinner's inline styles cannot override it.
+    // Removed in completeRender's .then() after Plotly finishes painting.
+    if (!document.getElementById('iheatmapr-rendering-css')) {
+      var s = document.createElement('style');
+      s.id = 'iheatmapr-rendering-css';
+      s.textContent = '.iheatmapr-rendering{opacity:0!important}';
+      document.head.appendChild(s);
+    }
+    graphDiv.classList.add('iheatmapr-rendering');
+
     // Merge custom iheatmapr data back into traces
     // This data was separated to avoid Plotly validation stripping it
     if (x.iheatmapr_custom) {
@@ -716,6 +730,9 @@ HTMLWidgets.widget({
         if (isFirstRender || prevTraceCount !== instance.traceCount) {
           setupEventHandlers();
         }
+
+        // Reveal now that the new plot is painted
+        graphDiv.classList.remove('iheatmapr-rendering');
       });
     }
 
