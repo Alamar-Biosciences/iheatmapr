@@ -26,13 +26,24 @@ jobs:
       - name: Determine ref and workflow file
         id: get_wf_name
         run: |
-          BASE_REF="${{ github.event.pull_request.base.ref }}"
+          # Fall back to ref_name for workflow_dispatch, where base.ref is
+          # empty -- without this, the trigger step below gets an empty ref
+          # and the downstream action silently substitutes NAS's "main".
+          BASE_REF="${{ github.event.pull_request.base.ref || github.ref_name }}"
           case "$BASE_REF" in
             dev)
               NAS_REF="port/mcp-client-on-2.0-dev"
               WORKFLOW_FILE="deploy_apollo_dev.yml"
               ;;
             master)
+              # NOTE: NAS's main/prod line does not install iheatmapr from a
+              # branch at all -- it only comes from the base image's
+              # renv.lock pin (reusable-deploy-helper.yml has no
+              # iheatmapr-branch input). So this dispatch rebuilds/redeploys
+              # NAS prod, but a merge here alone will NOT actually update the
+              # iheatmapr code running in it -- that requires a separate
+              # renv.lock bump in NAS. Left in place as a safety rebuild
+              # trigger, not a real code-deployment path.
               NAS_REF="main"
               WORKFLOW_FILE="deploy_prod.yml"
               ;;
