@@ -5,7 +5,8 @@ on:
   pull_request:
     types: closed
     branches:
-      - 'main'
+      - 'master'
+      - 'dev'
       - 'RC*'
       - '1.*'
     paths-ignore:
@@ -25,17 +26,41 @@ jobs:
       - name: Determine ref and workflow file
         id: get_wf_name
         run: |
-          if [ "${{ github.event.pull_request.base.ref }}" == "master" ]; then
-            echo "WORKFLOW_FILE=deploy_prod.yml" >> $GITHUB_OUTPUT
-          else
-            echo "WORKFLOW_FILE=deploy_dev.yml" >> $GITHUB_OUTPUT
-          fi
+          # Fall back to ref_name for workflow_dispatch, where base.ref is
+          # empty -- without this, the trigger step below gets an empty ref
+          # and the downstream action silently substitutes NAS's "main".
+          BASE_REF="${{ github.event.pull_request.base.ref || github.ref_name }}"
+          case "$BASE_REF" in
+            dev)
+              NAS_REF="port/mcp-client-on-2.0-dev"
+              WORKFLOW_FILE="deploy_apollo_dev.yml"
+              ;;
+            master)
+              # NOTE: NAS's main/prod line does not install iheatmapr from a
+              # branch at all -- it only comes from the base image's
+              # renv.lock pin (reusable-deploy-helper.yml has no
+              # iheatmapr-branch input). So this dispatch rebuilds/redeploys
+              # NAS prod, but a merge here alone will NOT actually update the
+              # iheatmapr code running in it -- that requires a separate
+              # renv.lock bump in NAS. Left in place as a safety rebuild
+              # trigger, not a real code-deployment path.
+              NAS_REF="main"
+              WORKFLOW_FILE="deploy_prod.yml"
+              ;;
+            *)
+              NAS_REF="$BASE_REF"
+              WORKFLOW_FILE="deploy_dev.yml"
+              ;;
+          esac
+          echo "NAS_REF=$NAS_REF" >> $GITHUB_OUTPUT
+          echo "WORKFLOW_FILE=$WORKFLOW_FILE" >> $GITHUB_OUTPUT
 
       - name: Check details
         run: |
           echo "Deploying SAM"
           echo "============="
           echo "Base branch: ${{ github.event.pull_request.base.ref }}"
+          echo "NAS ref: ${{ steps.get_wf_name.outputs.NAS_REF }}"
           echo "Workflow file: ${{ steps.get_wf_name.outputs.WORKFLOW_FILE }}"
 
       - name: Trigger SAM deployment
@@ -44,6 +69,6 @@ jobs:
           owner: Alamar-Biosciences
           repo: Secondary-Analysis-Module
           github_token: ${{ secrets.UTILITY_ACCESS_TOKEN }}
-          ref: ${{ github.event.pull_request.base.ref }}
+          ref: ${{ steps.get_wf_name.outputs.NAS_REF }}
           workflow_file_name: ${{ steps.get_wf_name.outputs.WORKFLOW_FILE }}
           wait_workflow: true
