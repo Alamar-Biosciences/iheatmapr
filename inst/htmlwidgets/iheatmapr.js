@@ -690,6 +690,18 @@ HTMLWidgets.widget({
     // Function to complete rendering after all data is decoded
     function completeRender() {
       var isFirstRender = !instance.plotly;
+
+      // Plotly.js 3.x dropped the internal shim that turned a bare string
+      // colorbar.title into {text: ...}; without it the title silently
+      // resolves to the placeholder default. Normalize here (not R-side) so
+      // it survives any later string-coercing post-processing of the trace.
+      for (var ti = 0; ti < x.data.length; ti++) {
+        var cb = x.data[ti].colorbar;
+        if (cb && typeof cb.title === 'string') {
+          cb.title = { text: cb.title };
+        }
+      }
+
       // Use Plotly.react for subsequent renders to avoid full DOM teardown/rebuild,
       // which eliminates the peak memory spike from old + new graph coexisting.
       var renderFn = isFirstRender ? Plotly.newPlot : Plotly.react;
