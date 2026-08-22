@@ -228,7 +228,7 @@ to_plotly_json <- function(p){
 plotlyDependency <- function() {
   htmltools::htmlDependency(
     name = "plotly",
-    version = "3.7.0",
+    version = "2.35.3",
     package = "iheatmapr",
     src = file.path("htmlwidgets", "lib", "plotlyjs"),
     script = "plotly-latest.min.js",
