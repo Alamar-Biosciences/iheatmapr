@@ -691,10 +691,11 @@ HTMLWidgets.widget({
     function completeRender() {
       var isFirstRender = !instance.plotly;
 
-      // Plotly.js 3.x dropped the internal shim that turned a bare string
-      // colorbar.title into {text: ...}; without it the title silently
-      // resolves to the placeholder default. Normalize here (not R-side) so
-      // it survives any later string-coercing post-processing of the trace.
+      // The vendored bundle (2.x) still auto-converts a bare string
+      // colorbar.title into {text: ...} internally, so this is a no-op
+      // today. Doing it explicitly here is cheap insurance against a
+      // future major-version bump: plotly.js 3.x removed that shim, which
+      // silently blanks every colorbar title in this repo's fixtures.
       for (var ti = 0; ti < x.data.length; ti++) {
         var cb = x.data[ti].colorbar;
         if (cb && typeof cb.title === 'string') {
