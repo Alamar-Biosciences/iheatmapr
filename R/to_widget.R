@@ -232,7 +232,10 @@ plotlyDependency <- function() {
     package = "iheatmapr",
     src = file.path("htmlwidgets", "lib", "plotlyjs"),
     script = "plotly-latest.min.js",
-    all_files = FALSE
+    # TRUE so LICENSE.txt / plotly.min.js.LICENSE.txt ship alongside the
+    # bundle instead of being silently dropped (all_files = FALSE only
+    # copies `script`).
+    all_files = TRUE
   )
 }
 
