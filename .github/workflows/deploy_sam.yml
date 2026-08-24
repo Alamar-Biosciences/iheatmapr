@@ -62,6 +62,7 @@ jobs:
               WORKFLOW_FILE="deploy_dev.yml"
               ;;
           esac
+          echo "BASE_REF=$BASE_REF" >> $GITHUB_OUTPUT
           echo "NAS_REF=$NAS_REF" >> $GITHUB_OUTPUT
           echo "WORKFLOW_FILE=$WORKFLOW_FILE" >> $GITHUB_OUTPUT
 
@@ -69,7 +70,7 @@ jobs:
         run: |
           echo "Deploying SAM"
           echo "============="
-          echo "Base branch: ${{ github.event.pull_request.base.ref }}"
+          echo "Base branch: ${{ steps.get_wf_name.outputs.BASE_REF }}"
           echo "NAS ref: ${{ steps.get_wf_name.outputs.NAS_REF }}"
           echo "Workflow file: ${{ steps.get_wf_name.outputs.WORKFLOW_FILE }}"
 
