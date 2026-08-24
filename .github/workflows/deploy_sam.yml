@@ -19,8 +19,10 @@ on:
 # deploy-apollo-dev group; a second dispatcher arriving while one is already
 # pending gets cancelled by GitHub, not by a real failure. Apollo's and
 # NULISAseqR_AI's deploy_nas.yml already hit this and added the same guard.
+# Scoped per base branch so a master rebuild can't cancel an in-flight dev
+# rebuild (and vice versa).
 concurrency:
-  group: deploy-sam
+  group: deploy-sam-${{ github.event.pull_request.base.ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
