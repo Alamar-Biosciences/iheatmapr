@@ -142,6 +142,54 @@ maybe_encode_trace_binary <- function(trace) {
   trace
 }
 
+#' Compact large label annotation groups
+#'
+#' `add_row_labels()` and `add_col_labels()` emit one annotation object per
+#' label (about 120 bytes each as JSON), so 26,400 samples add 3 MB to the
+#' widget payload. This replaces each group of more than `min_group` label
+#' annotations that share every field except `text` and their position along
+#' the axis with one template plus the label vector (and the positions, when
+#' they are not 1, 2, ..., n, as after clustering); the widget's JavaScript
+#' expands them again. Only use the result with the iheatmapr widget, which understands
+#' `label_groups`; static exports need the plain annotations.
+#'
+#' @param hm_list list from [to_plotly_list()], possibly post-processed
+#' @param min_group smallest group worth compacting
+#' @return `hm_list` with `layout$annotations` shortened and `label_groups` added
+#' @export
+compact_label_annotations <- function(hm_list, min_group = 400) {
+  anns <- hm_list$layout$annotations
+  if (length(anns) <= min_group) return(hm_list)
+
+  key <- vapply(anns, function(a) {
+    if (!isFALSE(a$showarrow) || is.null(a$xref) || is.null(a$yref)) return(NA_character_)
+    paste(a$xref, a$yref, if (is.null(a$textangle)) 0 else a$textangle, sep = "|")
+  }, "")
+  keep <- rep(TRUE, length(anns))
+  groups <- list()
+  for (k in unique(key[!is.na(key)])) {
+    idx <- which(key == k)
+    if (length(idx) <= min_group) next
+    g <- anns[idx]
+    along <- if (length(unique(vapply(g, function(a) as.numeric(a$x), 0))) > 1) "x" else "y"
+    pos <- vapply(g, function(a) as.numeric(a[[along]]), 0)
+    template <- g[[1]][setdiff(names(g[[1]]), c("text", along))]
+    same <- vapply(g, function(a) identical(a[setdiff(names(a), c("text", along))], template), NA)
+    if (!all(same)) next
+    group <- list(
+      template = template, along = along,
+      text = I(vapply(g, function(a) as.character(a$text), ""))
+    )
+    if (!identical(pos, as.numeric(seq_along(g)))) group$pos <- I(pos)
+    groups[[length(groups) + 1]] <- group
+    keep[idx] <- FALSE
+  }
+  if (!length(groups)) return(hm_list)
+  hm_list$layout$annotations <- anns[keep]
+  hm_list$label_groups <- groups
+  hm_list
+}
+
 #' @name to_plotly
 #' @export
 to_plotly_list <- function(p){
@@ -305,7 +353,7 @@ getPlotlySource <- function() {
 setMethod(to_widget,
           signature = c("Iheatmap"),
           function(p){
-            out <- to_plotly_list(p)
+            out <- compact_label_annotations(to_plotly_list(p))
             createWidget(name = "iheatmapr",
                          x = out,
                          width = out$layout$width,

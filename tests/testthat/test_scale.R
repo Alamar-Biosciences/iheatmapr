@@ -98,3 +98,47 @@ test_that("quantize_threshold controls when traces are quantized", {
   # default threshold (2e6 cells): a 200k-cell trace stays float32
   expect_equal(maybe_encode_trace_binary(trace)$z_binary$dtype, "float32")
 })
+
+expand_label_groups <- function(hm_list) {
+  anns <- hm_list$layout$annotations
+  for (g in hm_list$label_groups) {
+    for (k in seq_along(g$text)) {
+      a <- g$template
+      a[[g$along]] <- if (is.null(g$pos)) k else g$pos[k]
+      a$text <- g$text[k]
+      anns[[length(anns) + 1]] <- a
+    }
+  }
+  anns
+}
+
+test_that("compact_label_annotations round-trips large label groups", {
+  set.seed(1)
+  m <- matrix(rnorm(450 * 6), 450, 6, dimnames = list(sprintf("S%03d", 1:450), paste0("T", 1:6)))
+  l <- to_plotly_list(main_heatmap(m) %>% add_row_labels() %>% add_col_labels())
+  before <- l$layout$annotations
+  out <- compact_label_annotations(l)
+  expect_length(out$label_groups, 1)
+  expect_equal(out$label_groups[[1]]$along, "y")
+  expect_length(out$layout$annotations, 6)  # the 6 target labels stay: group too small
+  key <- function(a) paste(a$xref, a$yref, a$text, a$x, a$y, sep = "|")
+  expect_setequal(vapply(expand_label_groups(out), key, ""), vapply(before, key, ""))
+  expect_lt(nchar(jsonlite::toJSON(out$layout$annotations, auto_unbox = TRUE)) +
+              nchar(jsonlite::toJSON(out$label_groups, auto_unbox = TRUE)),
+            0.5 * nchar(jsonlite::toJSON(before, auto_unbox = TRUE)))
+  # small label sets are untouched
+  small <- to_plotly_list(main_heatmap(m[1:20, ]) %>% add_row_labels())
+  expect_null(compact_label_annotations(small)$label_groups)
+})
+
+test_that("compact_label_annotations keeps positions that are a permutation", {
+  set.seed(1)
+  m <- matrix(rnorm(450 * 6), 6, 450, dimnames = list(paste0("T", 1:6), sprintf("S%03d", 1:450)))
+  hm <- main_heatmap(m) %>% add_col_labels()
+  l <- to_plotly_list(hm %>% reorder_cols(sample(450)))
+  before <- l$layout$annotations
+  out <- compact_label_annotations(l)
+  expect_false(is.null(out$label_groups[[1]]$pos))
+  key <- function(a) paste(a$xref, a$yref, a$text, a$x, a$y, sep = "|")
+  expect_setequal(vapply(expand_label_groups(out), key, ""), vapply(before, key, ""))
+})

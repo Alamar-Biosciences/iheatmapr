@@ -4,6 +4,7 @@
 * Label annotations are thinned to the visible range, so heatmaps with tens of thousands of samples render.
 * Large heatmaps (500,000 cells or more, row-major) are drawn as a binned overview when zoomed out and as the visible full-resolution window when zoomed in, so zoom, pan and reset redraw at most 400,000 cells. Tooltips show the exact value when zoomed in and the bin mean (labelled) in the overview.
 * Matrices above `getOption("iheatmapr.quantize_threshold", 2e6)` cells are sent as 16-bit integers across the finite range, halving the payload. Values are off by at most range / 131070 (about 1.4e-4 for NPQ 0-19) and tooltips print only the digits that survive. Set the option to `Inf` to keep float32.
+* `compact_label_annotations()` ships big label groups (one annotation object per sample) as a template plus the label text, about 3 MB less at 26,400 samples; `to_widget()` applies it and the widget expands and thins the labels.
 * Adds `fast_hclust()` and the `hclust_fun` argument of `add_row_clustering()` / `add_col_clustering()`.
 
 # iheatmapr 0.4.10

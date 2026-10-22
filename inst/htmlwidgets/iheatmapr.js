@@ -706,6 +706,23 @@ function labelsUpdateFor(graphDiv, d) {
   return update;
 }
 
+// compact_label_annotations() ships big label groups as one template plus the
+// label text; expand them into annotations before thinning
+function expandLabelGroups(x) {
+  if (!x.label_groups || !x.label_groups.length) return;
+  var anns = x.layout.annotations || [];
+  x.label_groups.forEach(function(g) {
+    for (var k = 0; k < g.text.length; k++) {
+      var a = Object.assign({}, g.template);
+      a[g.along] = g.pos ? g.pos[k] : k + 1;
+      a.text = g.text[k];
+      anns.push(a);
+    }
+  });
+  x.layout.annotations = anns;
+  delete x.label_groups;
+}
+
 // ---- Level of detail --------------------------------------------------------
 // Plotly redraws every cell of a heatmap trace on each relayout, which costs
 // seconds at millions of cells. Large row-major heatmaps are therefore drawn
@@ -926,6 +943,7 @@ HTMLWidgets.widget({
 
     // Expand implicit coordinates (x_implicit/y_implicit -> full arrays)
     expandImplicitCoordinates(x.data);
+    expandLabelGroups(x);
     thinLayoutLabels(graphDiv, x.layout);
 
     // Store current data and source on instance so event handlers always
