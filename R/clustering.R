@@ -287,11 +287,21 @@ exact_hclust <- function(x, method, dist_method) {
 }
 
 hclust_via_kmeans <- function(x, method, ncenters) {
+  # kmeans refuses more centers than distinct rows (repeated samples)
+  ncenters <- min(ncenters, nrow(unique(x)))
   km <- stats::kmeans(x, centers = ncenters, iter.max = 30, nstart = 1)
   sizes <- as.numeric(table(factor(km$cluster, levels = seq_len(ncenters))))
   keep <- which(sizes > 0)
-  hc_c <- stats::hclust(stats::dist(km$centers[keep, , drop = FALSE]),
-                        method = method, members = sizes[keep])
+  d <- stats::dist(km$centers[keep, , drop = FALSE])
+  if (method %in% c("ward.D", "ward.D2")) {
+    # With `members`, hclust expects the Ward merge cost between clusters of
+    # those sizes as the start distance, not the distance between centers
+    n <- sizes[keep]
+    f <- 2 * outer(n, n) / outer(n, n, "+")
+    f <- f[lower.tri(f)]
+    d <- d * if (method == "ward.D2") sqrt(f) else f
+  }
+  hc_c <- stats::hclust(d, method = method, members = sizes[keep])
   graft_leaves(hc_c, split(seq_len(nrow(x)), factor(km$cluster, levels = keep)),
                labels = rownames(x))
 }

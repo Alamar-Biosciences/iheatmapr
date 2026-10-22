@@ -295,3 +295,22 @@ test_that("fast_hclust kmeans keeps the requested linkage", {
   expect_false(identical(fast_hclust(x, method = "complete", approx = "kmeans", ncenters = 200)$height,
                          fast_hclust(x, method = "average", approx = "kmeans", ncenters = 200)$height))
 })
+
+test_that("approximate ward.D2 reproduces the exact tree when centers are exact", {
+  # Every row repeats one of 12 distinct points with unequal counts, so k-means
+  # finds the points exactly and only the member weighting can differ
+  set.seed(2)
+  pts <- matrix(rnorm(12 * 6), 12, 6)
+  x <- pts[rep(1:12, times = c(1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233)), ]
+  exact <- stats::hclust(dist(x), "ward.D2")
+  approx <- fast_hclust(x, method = "ward.D2", approx = "kmeans", ncenters = 12)
+  expect_equal(sort(approx$height[approx$height > 0]),
+               sort(exact$height[exact$height > 0]))
+})
+
+test_that("approximate fast_hclust copes with repeated rows", {
+  set.seed(3)
+  x <- matrix(rnorm(30 * 5), 30, 5)[rep(1:30, 20), ]
+  h <- fast_hclust(x, approx = "kmeans", ncenters = 100)
+  expect_equal(sort(h$order), seq_len(600))
+})
