@@ -2,6 +2,7 @@
 
 * Matrices are sent row-major (`z_binary$layout`); the binding version is bumped so browsers do not reuse a cached script that reads them as column-major.
 * Label annotations are thinned to the visible range, so heatmaps with tens of thousands of samples render.
+* Large heatmaps (500,000 cells or more, row-major) are drawn as a binned overview when zoomed out and as the visible full-resolution window when zoomed in, so zoom, pan and reset redraw at most 400,000 cells. Tooltips show the exact value when zoomed in and the bin mean (labelled) in the overview.
 * Adds `fast_hclust()` and the `hclust_fun` argument of `add_row_clustering()` / `add_col_clustering()`.
 
 # iheatmapr 0.4.10

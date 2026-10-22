@@ -273,6 +273,7 @@ function expandImplicitCoordinates(data) {
     var trace = data[i];
 
     if (trace.x_implicit !== undefined) {
+      trace._x_seq = true;
       var n = trace.x_implicit;
       trace.x = [];
       for (var j = 1; j <= n; j++) {
@@ -282,6 +283,7 @@ function expandImplicitCoordinates(data) {
     }
 
     if (trace.y_implicit !== undefined) {
+      trace._y_seq = true;
       var m = trace.y_implicit;
       trace.y = [];
       for (var k = 1; k <= m; k++) {
@@ -361,6 +363,11 @@ function generateLazyTooltip(trace, rowIdx, colIdx) {
     return null;
   }
 
+  var cell = lodCell(trace, rowIdx, colIdx);
+  var shownRow = rowIdx, shownCol = colIdx;
+  rowIdx = cell.row;
+  colIdx = cell.col;
+
   var parts = [];
 
   // Helper to add run info after sample label
@@ -400,7 +407,10 @@ function generateLazyTooltip(trace, rowIdx, colIdx) {
   // was released after Plotly consumed it (Optimization 2).
   if (lt.show_value) {
     var value;
-    if (trace._z_float32 && trace._z_dims) {
+    if (cell.n > 1) {
+      // Binned overview cell: show the mean the heatmap is drawn with
+      value = trace.z && trace.z[shownRow] ? trace.z[shownRow][shownCol] : undefined;
+    } else if (trace._z_float32 && trace._z_dims) {
       // Column-major layout from R: flatIdx = col * nrows + row
       var nrows = trace._z_dims[0];
       var ncols = trace._z_dims[1];
@@ -422,7 +432,8 @@ function generateLazyTooltip(trace, rowIdx, colIdx) {
     if (value !== null && value !== undefined) {
       // Format to 3 significant figures for display
       var formatted = typeof value === 'number' ? value.toPrecision(4) : value;
-      parts.push(sanitizeText(lt.prepend_value) + formatted);
+      parts.push(sanitizeText(lt.prepend_value) + formatted +
+                 (cell.n > 1 ? ' (mean of ' + cell.n + ' cells, zoom in for exact)' : ''));
     }
   }
 
@@ -635,12 +646,12 @@ function rethinned(graphDiv, layoutOrFull, d) {
   return out;
 }
 
-// Called on plotly_relayout: re-thins labels when an axis range changes.
+// Layout update that re-thins labels after an axis range change, or null.
 // Plotly's autorange also looks at annotations, so with thinned labels it would
 // fit only the visible ones; reset to the layout's original range instead.
-function rethinLabelsOnRelayout(graphDiv, d) {
+function labelsUpdateFor(graphDiv, d) {
   var full = graphDiv._fullLabels;
-  if (!full || !d) return;
+  if (!full || !d) return null;
   var update = {};
   var d2 = Object.assign({}, d);
   var touched = false;
@@ -656,11 +667,172 @@ function rethinLabelsOnRelayout(graphDiv, d) {
       touched = true;
     }
   });
-  if (!touched) return;  // includes the relayout this function issues itself
+  if (!touched) return null;
   update.annotations = full.others.concat(rethinned(graphDiv, graphDiv._fullLayout, d2));
+  return update;
+}
+
+// ---- Level of detail --------------------------------------------------------
+// Plotly redraws every cell of a heatmap trace on each relayout, which costs
+// seconds at millions of cells. Large row-major heatmaps are therefore drawn
+// as a binned overview when zoomed out and as the visible full-resolution
+// window (zero-copy row views) when zoomed in, so a redraw never exceeds
+// LOD_BUDGET_CELLS. The full Float32Array stays on the trace for tooltips.
+var LOD_MIN_CELLS = 500000;
+var LOD_BUDGET_CELLS = 400000;
+
+function lodEligible(trace) {
+  return !!(trace._z_float32 && trace._z_rowmajor && trace._z_dims &&
+            trace._x_seq && trace._y_seq &&
+            trace._z_dims[0] * trace._z_dims[1] >= LOD_MIN_CELLS);
+}
+
+function lodAxisRange(axObj) {
+  var r = axObj && axObj.range;
+  return r ? [Math.min(r[0], r[1]), Math.max(r[0], r[1])] : null;
+}
+
+// Window and bin factors for the visible ranges (1-based axis coordinates)
+function lodDesired(trace, xr, yr) {
+  var nr = trace._z_dims[0], nc = trace._z_dims[1];
+  function span(range, n) {
+    var lo = range ? Math.max(0, Math.floor(range[0] - 0.5)) : 0;
+    var hi = range ? Math.min(n, Math.ceil(range[1] - 0.5)) : n;
+    var margin = Math.ceil((hi - lo) * 0.25);
+    return { lo: lo, hi: hi, start: Math.max(0, lo - margin), end: Math.min(n, hi + margin) };
+  }
+  var cs = span(xr, nc), rs = span(yr, nr);
+  var fc = 1, fr = 1;
+  while (Math.ceil((rs.end - rs.start) / fr) * Math.ceil((cs.end - cs.start) / fc) > LOD_BUDGET_CELLS) {
+    if ((cs.end - cs.start) / fc >= (rs.end - rs.start) / fr) fc *= 2; else fr *= 2;
+  }
+  // Align the window to bin boundaries so panning does not shift bins
+  var c0 = Math.floor(cs.start / fc) * fc, r0 = Math.floor(rs.start / fr) * fr;
+  return { r0: r0, r1: rs.end, c0: c0, c1: cs.end, fr: fr, fc: fc,
+           visR0: rs.lo, visR1: rs.hi, visC0: cs.lo, visC1: cs.hi };
+}
+
+function lodBuild(trace, d) {
+  var ncols = trace._z_dims[1], buf = trace._z_float32;
+  var nr = Math.ceil((d.r1 - d.r0) / d.fr), nc = Math.ceil((d.c1 - d.c0) / d.fc);
+  var rows = new Array(nr);
+  if (d.fr === 1 && d.fc === 1) {
+    for (var i = 0; i < nr; i++) {
+      rows[i] = buf.subarray((d.r0 + i) * ncols + d.c0, (d.r0 + i) * ncols + d.c1);
+    }
+    return rows;
+  }
+  var store = new Float32Array(nr * nc);
+  for (var i2 = 0; i2 < nr; i2++) {
+    var out = store.subarray(i2 * nc, (i2 + 1) * nc);
+    var rs = d.r0 + i2 * d.fr, re = Math.min(d.r1, rs + d.fr);
+    for (var j = 0; j < nc; j++) {
+      var cs = d.c0 + j * d.fc, ce = Math.min(d.c1, cs + d.fc), sum = 0, cnt = 0;
+      for (var r = rs; r < re; r++) {
+        var base = r * ncols;
+        for (var c = cs; c < ce; c++) {
+          var v = buf[base + c];
+          if (v === v) { sum += v; cnt++; }
+        }
+      }
+      out[j] = cnt ? sum / cnt : NaN;
+    }
+    rows[i2] = out;
+  }
+  return rows;
+}
+
+function lodTraceProps(d) {
+  return { x0: d.c0 + (d.fc + 1) / 2, dx: d.fc, y0: d.r0 + (d.fr + 1) / 2, dy: d.fr };
+}
+
+// Before the first render: swap eligible traces to their overview
+function lodInit(data, layout) {
+  data.forEach(function(trace) {
+    trace._lod = null;
+    if (!lodEligible(trace)) return;
+    var xr = lodAxisRange(layout[axisKeyFromRef(trace.xaxis || 'x')]);
+    var yr = lodAxisRange(layout[axisKeyFromRef(trace.yaxis || 'y')]);
+    var d = lodDesired(trace, xr, yr);
+    trace.z = lodBuild(trace, d);
+    delete trace.x;
+    delete trace.y;
+    Object.assign(trace, lodTraceProps(d));
+    trace._lod = d;
+  });
+}
+
+// Trace updates for windows that no longer fit the visible ranges.
+// `rangeOverrides` maps an axis key to a range about to be applied.
+function lodChangesFor(graphDiv, rangeOverrides) {
+  var changes = [];
+  var data = graphDiv.data;
+  if (!data || !graphDiv._fullLayout) return changes;
+  data.forEach(function(trace, idx) {
+    if (!trace._lod) return;
+    var xKey = axisKeyFromRef(trace.xaxis || 'x'), yKey = axisKeyFromRef(trace.yaxis || 'y');
+    var xr = rangeOverrides[xKey] || lodAxisRange(graphDiv._fullLayout[xKey]);
+    var yr = rangeOverrides[yKey] || lodAxisRange(graphDiv._fullLayout[yKey]);
+    var d = lodDesired(trace, xr && [Math.min(xr[0], xr[1]), Math.max(xr[0], xr[1])],
+                       yr && [Math.min(yr[0], yr[1]), Math.max(yr[0], yr[1])]);
+    var st = trace._lod;
+    var covers = st.r0 <= d.visR0 && st.r1 >= d.visR1 && st.c0 <= d.visC0 && st.c1 >= d.visC1;
+    if (covers && st.fr <= d.fr && st.fc <= d.fc) return;
+    changes.push({ idx: idx, d: d });
+  });
+  return changes;
+}
+
+// After a relayout settles: re-thin labels and refine or coarsen heatmap
+// windows in ONE Plotly.update, so the plot is redrawn once, not once per fix.
+function applyAdaptiveUpdates(graphDiv, d) {
+  var layoutUpdate = labelsUpdateFor(graphDiv, d);
+  var overrides = {};
+  if (layoutUpdate) {
+    Object.keys(layoutUpdate).forEach(function(k) {
+      var m = /^([xy]axis\d*)\.range$/.exec(k);
+      if (m) overrides[m[1]] = layoutUpdate[k];
+    });
+  }
+  var changes = lodChangesFor(graphDiv, overrides);
+  if (!layoutUpdate && !changes.length) return;
+
+  var dataUpdate = { z: [], x0: [], dx: [], y0: [], dy: [] };
+  var indices = [];
+  changes.forEach(function(c) {
+    var trace = graphDiv.data[c.idx], props = lodTraceProps(c.d);
+    trace._lod = c.d;
+    dataUpdate.z.push(lodBuild(trace, c.d));
+    dataUpdate.x0.push(props.x0);
+    dataUpdate.dx.push(props.dx);
+    dataUpdate.y0.push(props.y0);
+    dataUpdate.dy.push(props.dy);
+    indices.push(c.idx);
+  });
+
   graphDiv._selfRelayout = true;
   var done = function() { graphDiv._selfRelayout = false; };
-  Plotly.relayout(graphDiv, update).then(done, done);
+  Plotly.update(graphDiv, indices.length ? dataUpdate : {}, layoutUpdate || {},
+                indices.length ? indices : undefined).then(done, done);
+}
+
+function scheduleAdaptiveUpdate(graphDiv, d) {
+  graphDiv._pendingRelayout = Object.assign(graphDiv._pendingRelayout || {}, d);
+  if (graphDiv._adaptiveTimeout) clearTimeout(graphDiv._adaptiveTimeout);
+  graphDiv._adaptiveTimeout = setTimeout(function() {
+    var pending = graphDiv._pendingRelayout;
+    graphDiv._adaptiveTimeout = null;
+    graphDiv._pendingRelayout = null;
+    applyAdaptiveUpdates(graphDiv, pending);
+  }, 50);
+}
+
+// Map a displayed cell to the full matrix; binned cells report their first
+// row/column and the number of cells they average
+function lodCell(trace, rowIdx, colIdx) {
+  var st = trace._lod;
+  if (!st) return { row: rowIdx, col: colIdx, n: 1 };
+  return { row: st.r0 + rowIdx * st.fr, col: st.c0 + colIdx * st.fc, n: st.fr * st.fc };
 }
 
 HTMLWidgets.widget({
@@ -755,13 +927,16 @@ HTMLWidgets.widget({
           };
           // For z: prefer Float32Array backing if the 2D z-array was released
           if (tr._z_float32 && tr._z_dims && Array.isArray(pt.pointNumber)) {
-            var rowIdx = pt.pointNumber[0];
-            var colIdx = pt.pointNumber[1];
+            var cell = lodCell(tr, pt.pointNumber[0], pt.pointNumber[1]);
+            var rowIdx = cell.row;
+            var colIdx = cell.col;
             var zNrows = tr._z_dims[0];
             var zNcols = tr._z_dims[1];
             if (rowIdx >= 0 && rowIdx < zNrows && colIdx >= 0 && colIdx < zNcols) {
               var flatIdx = zFlatIndex(tr, rowIdx, colIdx);
-              if (tr._z_na && tr._z_na.has(flatIdx)) {
+              if (cell.n > 1) {
+                obj.z = tr.z[pt.pointNumber[0]][pt.pointNumber[1]];
+              } else if (tr._z_na && tr._z_na.has(flatIdx)) {
                 obj.z = null;
               } else {
                 obj.z = tr._z_float32[flatIdx];
@@ -807,7 +982,7 @@ HTMLWidgets.widget({
         scheduleColorbarHandlers();
         // Our own annotation update: not a user action, keep it out of Shiny
         if (graphDiv._selfRelayout) return;
-        rethinLabelsOnRelayout(graphDiv, d);
+        scheduleAdaptiveUpdate(graphDiv, d);
 
         if (shinyMode) {
           Shiny.onInputChange(
@@ -862,6 +1037,7 @@ HTMLWidgets.widget({
 
       // Use Plotly.react for subsequent renders to avoid full DOM teardown/rebuild,
       // which eliminates the peak memory spike from old + new graph coexisting.
+      lodInit(x.data, x.layout);
       var renderFn = isFirstRender ? Plotly.newPlot : Plotly.react;
 
       renderFn(graphDiv, x.data, x.layout, x.config).then(function() {
