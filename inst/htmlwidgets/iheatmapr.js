@@ -700,11 +700,20 @@ function rethinned(graphDiv, layoutOrFull, d) {
 // fit only the visible ones; reset to the layout's original range instead.
 function labelsUpdateFor(graphDiv, d) {
   var full = graphDiv._fullLabels;
-  if (!full || !d) return null;
+  var lodRanges = graphDiv._lodRanges || {};
+  if (!d || (!full && !Object.keys(lodRanges).length)) return null;
   var update = {};
   var d2 = Object.assign({}, d);
   var touched = false;
-  Object.keys(full.big).forEach(function(key) {
+  Object.keys(lodRanges).forEach(function(axisKey) {
+    if (d[axisKey + '.autorange']) {
+      d2[axisKey + '.range'] = lodRanges[axisKey];
+      update[axisKey + '.range'] = lodRanges[axisKey].slice();
+      update[axisKey + '.autorange'] = false;
+      touched = true;
+    }
+  });
+  if (full) Object.keys(full.big).forEach(function(key) {
     var b = full.big[key];
     var axisKey = axisKeyFromRef(b.ref);
     if (d[axisKey + '.autorange'] && b.initialRange) {
@@ -717,7 +726,7 @@ function labelsUpdateFor(graphDiv, d) {
     }
   });
   if (!touched) return null;
-  update.annotations = full.others.concat(rethinned(graphDiv, graphDiv._fullLayout, d2));
+  if (full) update.annotations = full.others.concat(rethinned(graphDiv, graphDiv._fullLayout, d2));
   return update;
 }
 
@@ -781,16 +790,19 @@ function lodAxisRange(axObj) {
   return r ? [Math.min(r[0], r[1]), Math.max(r[0], r[1])] : null;
 }
 
-// Window and bin factors for the visible ranges (1-based axis coordinates)
+// Window and bin factors for the visible ranges (1-based axis coordinates),
+// or null when no cell is visible
 function lodDesired(trace, xr, yr) {
   var nr = trace._z_dims[0], nc = trace._z_dims[1];
   function span(range, n) {
-    var lo = range ? Math.max(0, Math.floor(range[0] - 0.5)) : 0;
-    var hi = range ? Math.min(n, Math.ceil(range[1] - 0.5)) : n;
+    var lo = range ? Math.min(n, Math.max(0, Math.floor(range[0] - 0.5))) : 0;
+    var hi = range ? Math.max(0, Math.min(n, Math.ceil(range[1] - 0.5))) : n;
+    if (hi <= lo) return null;  // panned entirely off the matrix
     var margin = Math.ceil((hi - lo) * 0.25);
     return { lo: lo, hi: hi, start: Math.max(0, lo - margin), end: Math.min(n, hi + margin) };
   }
   var cs = span(xr, nc), rs = span(yr, nr);
+  if (!cs || !rs) return null;
   var fc = 1, fr = 1;
   while (Math.ceil((rs.end - rs.start) / fr) * Math.ceil((cs.end - cs.start) / fc) > LOD_BUDGET_CELLS) {
     if ((cs.end - cs.start) / fc >= (rs.end - rs.start) / fr) fc *= 2; else fr *= 2;
@@ -831,15 +843,31 @@ function lodBuild(trace, d) {
   return rows;
 }
 
+// Plotly's autorange fits only the drawn window, so remember each LOD axis's
+// full range to restore on autorange (reset axes, double click)
+function rememberLodRange(graphDiv, layout, trace) {
+  [['x', 1], ['y', 0]].forEach(function(a) {
+    var key = axisKeyFromRef(trace[a[0] + 'axis'] || a[0]);
+    if (graphDiv._lodRanges[key]) return;
+    var ax = layout[key] || {};
+    var n = trace._z_dims[a[1]];
+    var r = ax.range ? ax.range.slice() : [0.5, n + 0.5];
+    if (!ax.range && ax.autorange === 'reversed') r.reverse();
+    graphDiv._lodRanges[key] = r;
+  });
+}
+
 function lodTraceProps(d) {
   return { x0: d.c0 + (d.fc + 1) / 2, dx: d.fc, y0: d.r0 + (d.fr + 1) / 2, dy: d.fr };
 }
 
 // Before the first render: swap eligible traces to their overview
-function lodInit(data, layout) {
+function lodInit(data, layout, graphDiv) {
+  graphDiv._lodRanges = {};
   data.forEach(function(trace) {
     trace._lod = null;
     if (!lodEligible(trace)) return;
+    rememberLodRange(graphDiv, layout, trace);
     if (trace._lazy) {
       // The inline overview is the whole matrix at the factors R chose
       var ov = trace._lazy.ov, nr = trace._z_dims[0], nc = trace._z_dims[1];
@@ -854,7 +882,7 @@ function lodInit(data, layout) {
     }
     var xr = lodAxisRange(layout[axisKeyFromRef(trace.xaxis || 'x')]);
     var yr = lodAxisRange(layout[axisKeyFromRef(trace.yaxis || 'y')]);
-    var d = lodDesired(trace, xr, yr);
+    var d = lodDesired(trace, xr, yr) || lodDesired(trace, null, null);
     trace.z = lodBuild(trace, d);
     delete trace.x;
     delete trace.y;
@@ -918,6 +946,7 @@ function lodChangesFor(graphDiv, rangeOverrides) {
     var yr = rangeOverrides[yKey] || lodAxisRange(graphDiv._fullLayout[yKey]);
     var d = lodDesired(trace, xr && [Math.min(xr[0], xr[1]), Math.max(xr[0], xr[1])],
                        yr && [Math.min(yr[0], yr[1]), Math.max(yr[0], yr[1])]);
+    if (!d) return;
     var st = trace._lod;
     var covers = st.r0 <= d.visR0 && st.r1 >= d.visR1 && st.c0 <= d.visC0 && st.c1 >= d.visC1;
     if (covers && st.fr <= d.fr && st.fc <= d.fc) return;
@@ -974,6 +1003,8 @@ function applyAdaptiveUpdates(graphDiv, d) {
 }
 
 function scheduleAdaptiveUpdate(graphDiv, d) {
+  // A reply for the previous view must not land while this change is debounced
+  graphDiv._adaptSeq = (graphDiv._adaptSeq || 0) + 1;
   graphDiv._pendingRelayout = Object.assign(graphDiv._pendingRelayout || {}, d);
   if (graphDiv._adaptiveTimeout) clearTimeout(graphDiv._adaptiveTimeout);
   graphDiv._adaptiveTimeout = setTimeout(function() {
@@ -1074,6 +1105,12 @@ HTMLWidgets.widget({
           // Use instance.currentData (not closed-over x.data) so that
           // subsequent Plotly.react() re-renders update the data correctly
           var tr = instance.currentData[pt.curveNumber];
+          // Binned cells report their first source cell, as the tooltip does
+          if (tr._lod && Array.isArray(pt.pointNumber)) {
+            var src = lodCell(tr, pt.pointNumber[0], pt.pointNumber[1]);
+            obj.x = src.col + 1;
+            obj.y = src.row + 1;
+          }
           // add on additional trace info, if it exists
           var attachKey = function(keyName) {
             if (tr.hasOwnProperty(keyName) && tr[keyName] !== null) {
@@ -1199,7 +1236,7 @@ HTMLWidgets.widget({
       // Use Plotly.react for subsequent renders to avoid full DOM teardown/rebuild,
       // which eliminates the peak memory spike from old + new graph coexisting.
       lazyInit(x.data);
-      lodInit(x.data, x.layout);
+      lodInit(x.data, x.layout, graphDiv);
       var renderFn = isFirstRender ? Plotly.newPlot : Plotly.react;
 
       renderFn(graphDiv, x.data, x.layout, x.config).then(function() {

@@ -182,6 +182,9 @@ lazy_window_handler <- function(data, req) {
                       list("Cache-Control" = "no-store"))
 }
 
+# Quantizing clamps +/-Inf to the finite extrema
+anyInfinite <- function(m) any(is.infinite(m))
+
 `%||%` <- function(a, b) if (is.null(a)) b else a
 
 # The Shiny session to serve windows from, or NULL: lazy windows are opt-in
@@ -204,7 +207,9 @@ lazy_window_trace <- function(trace, session, index) {
   name <- sprintf("%s_%d", id, index)
   url <- session$registerDataObj(name, list(m = z), lazy_window_handler)
   overview <- window_bins(z, 0, nrow(z), 0, ncol(z), f[["fr"]], f[["fc"]])
-  trace$z_binary <- encode_matrix_binary(overview, quantize = TRUE)
+  # An unbinned overview is already exact, and quantizing would clamp infinities
+  binned <- f[["fr"]] > 1 || f[["fc"]] > 1
+  trace$z_binary <- encode_matrix_binary(overview, quantize = binned && !anyInfinite(overview))
   trace$lazy_window <- list(url = url, dims = dim(z), fr = f[["fr"]], fc = f[["fc"]])
   trace$z <- NULL
   trace
@@ -237,7 +242,8 @@ maybe_encode_trace_binary <- function(trace, index = 1L) {
     trace$z_binary <- encode_matrix_binary(
       trace$z,
       compress = length(trace$z) > getOption("iheatmapr.compress_threshold", 2e6),
-      quantize = length(trace$z) > getOption("iheatmapr.quantize_threshold", 2e6),
+      quantize = length(trace$z) > getOption("iheatmapr.quantize_threshold", 2e6) &&
+        !anyInfinite(trace$z),
       quantize_bits = getOption("iheatmapr.quantize_bits", 16)
     )
     # Replace z with placeholder (will be decoded in JS)

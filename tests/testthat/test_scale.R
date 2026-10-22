@@ -99,6 +99,15 @@ test_that("quantize_threshold controls when traces are quantized", {
   expect_equal(maybe_encode_trace_binary(trace)$z_binary$dtype, "float32")
 })
 
+test_that("matrices with infinities are never quantized", {
+  m <- matrix(rnorm(200000), 400, 500)
+  m[1, 1] <- Inf
+  old <- options(iheatmapr.quantize_threshold = 1e5)
+  on.exit(options(old))
+  enc <- maybe_encode_trace_binary(list(z = m))$z_binary
+  expect_equal(enc$dtype, "float32")
+})
+
 expand_label_groups <- function(hm_list) {
   anns <- hm_list$layout$annotations
   for (g in hm_list$label_groups) {
@@ -260,6 +269,15 @@ test_that("maybe_encode_trace_binary serves a big matrix lazily only with the op
   # the inline overview is the whole matrix at the factors the browser expects
   f <- lod_factors(300, 400)
   expect_equal(out$z_binary$dims, c(ceiling(300 / f[["fr"]]), ceiling(400 / f[["fc"]])))
+  # an overview with infinities or one bin per cell is not quantized
+  big <- list(z = I(matrix(rnorm(700 * 700), 700, 700)), x_implicit = 700, y_implicit = 700)
+  expect_equal(lazy(big, 3L)$z_binary$dtype, "uint16")
+  big$z[1, 1] <- Inf
+  expect_equal(lazy(big, 3L)$z_binary$dtype, "float32")
+  options(iheatmapr.lazy_threshold = 1e5)
+  small <- list(z = I(matrix(rnorm(300 * 400), 300, 400)), x_implicit = 400, y_implicit = 300)
+  expect_equal(lod_factors(300, 400, budget = 4e5), c(fr = 1, fc = 1))
+  expect_equal(lazy(small, 4L)$z_binary$dtype, "float32")
   # no session, option off, non-sequential axes, or below the threshold: inline
   expect_null(maybe_encode_trace_binary(trace)$lazy_window)
   options(iheatmapr.lazy_windows = FALSE)
