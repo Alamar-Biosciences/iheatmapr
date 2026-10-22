@@ -31,7 +31,8 @@ double_to_float32_raw <- function(x) {
 #' @return A list with base64 data, dimensions, NA positions, and encoding metadata
 #' @keywords internal
 #' @importFrom base64enc base64encode
-encode_matrix_binary <- function(mat, use_float32 = TRUE, compress = FALSE) {
+encode_matrix_binary <- function(mat, use_float32 = TRUE, compress = FALSE,
+                                 row_major = TRUE) {
 
   # Validate matrix
   if (!is.matrix(mat) || nrow(mat) == 0 || ncol(mat) == 0) {
@@ -48,12 +49,14 @@ encode_matrix_binary <- function(mat, use_float32 = TRUE, compress = FALSE) {
     mat_clean[na_mask] <- 0
   }
 
-  # Convert matrix to raw bytes (column-major order)
+  # Row-major bytes let the browser expose each matrix row as a zero-copy view
+  # of the decoded buffer instead of building a nested JS array.
+  flat <- if (row_major) as.vector(t(mat_clean)) else as.vector(mat_clean)
   if (use_float32) {
-    raw_data <- double_to_float32_raw(as.vector(mat_clean))
+    raw_data <- double_to_float32_raw(flat)
     dtype <- "float32"
   } else {
-    raw_data <- writeBin(as.vector(mat_clean), raw(), size = 8)
+    raw_data <- writeBin(flat, raw(), size = 8)
     dtype <- "float64"
   }
 
@@ -72,12 +75,15 @@ encode_matrix_binary <- function(mat, use_float32 = TRUE, compress = FALSE) {
     data_binary = b64_data,
     dims = dim(mat),
     dtype = dtype,
-    encoding = encoding
+    encoding = encoding,
+    layout = if (row_major) "row-major" else "col-major"
   )
 
   # Include NA positions if present
   if (has_na) {
-    result$na_positions <- I(which(na_mask) - 1L)  # 0-indexed for JS
+    # Positions index the flat buffer in the layout chosen above
+    na_flat <- if (row_major) which(t(na_mask)) else which(na_mask)
+    result$na_positions <- I(na_flat - 1L)  # 0-indexed for JS
   }
 
   result
@@ -102,7 +108,10 @@ should_use_binary <- function(trace) {
 maybe_encode_trace_binary <- function(trace) {
   if (should_use_binary(trace)) {
     # Store original z matrix as binary
-    trace$z_binary <- encode_matrix_binary(trace$z)
+    trace$z_binary <- encode_matrix_binary(
+      trace$z,
+      compress = length(trace$z) > getOption("iheatmapr.compress_threshold", 2e6)
+    )
     # Replace z with placeholder (will be decoded in JS)
     trace$z <- NULL
   }

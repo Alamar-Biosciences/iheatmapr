@@ -8,6 +8,9 @@
 #' @param clust_dist distance function to use for clustering if hierarchical 
 #' clustering
 #' @param clust_method clustering methods passed to `hclust`
+#' @param hclust_fun optional function taking the matrix (rows = items to
+#' cluster) and returning an `hclust` object. Overrides `clust_dist` and
+#' `clust_method`; see \code{\link{fast_hclust}} for a low-memory option.
 #' @param groups vector of group assignments
 #' @param colors colors to use for annotation of grouping, can be RColorBrewer 
 #' palette name or
@@ -43,6 +46,7 @@ setMethod(add_row_clustering,
                    groups = NULL,
                    clust_dist = stats::dist,
                    clust_method = 'complete',
+                   hclust_fun = NULL,
                    colors = NULL,
                    show_colorbar = TRUE,
                    side = c("left","right"),
@@ -60,7 +64,7 @@ setMethod(add_row_clustering,
             mat <- get_data(hm)
             
             if (method == "hclust"){
-              dendro <- hclust(clust_dist(mat), method = clust_method)
+              dendro <- if (is.null(hclust_fun)) hclust(clust_dist(mat), method = clust_method) else hclust_fun(mat)
               if (!is.null(k)){
                 groups <- stats::cutree(dendro, k = k)
                 if (is.null(colors)) colors <- pick_discrete_colors(groups, p)
@@ -111,6 +115,9 @@ setMethod(add_row_clustering,
 #' clustering
 #' #' @param dist_method distance methods passed to `stats::dist`
 #' @param clust_method clustering methods passed to `hclust`
+#' @param hclust_fun optional function taking the matrix (rows = items to
+#' cluster) and returning an `hclust` object. Overrides `clust_dist` and
+#' `clust_method`; see \code{\link{fast_hclust}} for a low-memory option.
 #' @param groups vector of group assignments
 #' @param colors colors to use for annotation of grouping, can be RColorBrewer 
 #' palette name or
@@ -147,6 +154,7 @@ setMethod(add_col_clustering,
                    groups = NULL,
                    clust_dist = stats::dist,
                    clust_method = 'complete',
+                   hclust_fun = NULL,
                    colors = NULL,
                    show_colorbar = TRUE,
                    side = c("top","bottom"),
@@ -164,7 +172,7 @@ setMethod(add_col_clustering,
             mat <- get_data(hm)
             
             if (method == "hclust"){
-              dendro <- hclust(clust_dist(t(mat)), method = clust_method)
+              dendro <- if (is.null(hclust_fun)) hclust(clust_dist(t(mat)), method = clust_method) else hclust_fun(t(mat))
               if (!is.null(k)){
                 groups <- stats::cutree(dendro, k = k)
                 if (is.null(colors)) colors <- pick_discrete_colors(groups, p)
@@ -202,3 +210,111 @@ setMethod(add_col_clustering,
             validObject(p)
             p
           })
+
+
+#' Scalable hierarchical clustering
+#'
+#' Clusters the rows of `x`. Exact clustering needs the O(n^2) distance matrix
+#' of `stats::dist`, or O(n^2 * ncol) time with `fastcluster::hclust.vector`.
+#' Both are too costly beyond roughly 10,000 rows, so two approximations are
+#' offered. Both return an `hclust` object with one leaf per row.
+#'
+#' * `approx = "pca"`: cluster on the first `npcs` principal components.
+#'   Euclidean distance only.
+#' * `approx = "kmeans"`: run k-means with `ncenters` centers, cluster the
+#'   centers, then graft each center's members back in as a zero-height
+#'   subtree. Members of one center stay adjacent and are not ordered among
+#'   themselves. Euclidean distance only.
+#'
+#' With `approx = "none"` and Euclidean distance, Ward, centroid or median
+#' linkage use `fastcluster::hclust.vector` (O(n) memory); other combinations
+#' use `stats::dist` and `hclust`.
+#'
+#' @param x numeric matrix, one item to cluster per row
+#' @param method linkage method, as in `stats::hclust`
+#' @param dist_method distance method, as in `stats::dist`
+#' @param approx approximation to use, see Details
+#' @param npcs number of principal components for `approx = "pca"`
+#' @param ncenters number of k-means centers for `approx = "kmeans"`
+#' @return an `hclust` object
+#' @export
+fast_hclust <- function(x, method = "ward.D2", dist_method = "euclidean",
+                        approx = c("none", "pca", "kmeans"),
+                        npcs = 20, ncenters = 2000) {
+  approx <- match.arg(approx)
+  if (approx != "none" && dist_method != "euclidean") {
+    stop("approx = \"", approx, "\" requires dist_method = \"euclidean\"")
+  }
+  if (approx == "pca" && ncol(x) > npcs && nrow(x) > npcs) {
+    x <- stats::prcomp(x, center = TRUE, scale. = FALSE, rank. = npcs)$x
+  } else if (approx == "kmeans" && nrow(x) > ncenters) {
+    return(hclust_via_kmeans(x, method, ncenters))
+  }
+  exact_hclust(x, method, dist_method)
+}
+
+exact_hclust <- function(x, method, dist_method) {
+  vector_methods <- c(ward.D2 = "ward", centroid = "centroid", median = "median")
+  if (dist_method == "euclidean" && method %in% names(vector_methods) &&
+      requireNamespace("fastcluster", quietly = TRUE)) {
+    return(fastcluster::hclust.vector(x, method = unname(vector_methods[method]),
+                                      metric = "euclidean"))
+  }
+  stats::hclust(stats::dist(x, method = dist_method), method = method)
+}
+
+hclust_via_kmeans <- function(x, method, ncenters) {
+  km <- stats::kmeans(x, centers = ncenters, iter.max = 30, nstart = 1)
+  sizes <- as.numeric(table(factor(km$cluster, levels = seq_len(ncenters))))
+  keep <- which(sizes > 0)
+  hc_c <- stats::hclust(stats::dist(km$centers[keep, , drop = FALSE]),
+                        method = method, members = sizes[keep])
+  graft_leaves(hc_c, split(seq_len(nrow(x)), factor(km$cluster, levels = keep)),
+               labels = rownames(x))
+}
+
+# Replace each leaf of `hc` by a chain of zero-height merges over its members
+graft_leaves <- function(hc, members, labels = NULL) {
+  n_chain <- sum(lengths(members) - 1L)
+  chain_merge <- matrix(0L, n_chain, 2)
+  top <- integer(length(members))  # merge-matrix id standing for each leaf
+  row <- 0L
+  for (k in seq_along(members)) {
+    m <- members[[k]]
+    node <- -m[1]
+    for (j in seq_along(m)[-1]) {
+      row <- row + 1L
+      chain_merge[row, ] <- c(node, -m[j])
+      node <- row
+    }
+    top[k] <- node
+  }
+  upper <- hc$merge
+  neg <- upper < 0
+  upper[neg] <- top[-upper[neg]]
+  upper[!neg] <- upper[!neg] + n_chain
+  merge <- rbind(chain_merge, upper)
+  structure(list(merge = merge, height = c(rep(0, n_chain), hc$height),
+                 order = hclust_order(merge), labels = labels,
+                 method = hc$method, call = match.call(),
+                 dist.method = hc$dist.method),
+            class = "hclust")
+}
+
+hclust_order <- function(merge) {
+  # Iterative: chained merges are too deep for recursion
+  out <- integer(nrow(merge) + 1L)
+  pos <- 0L
+  stack <- nrow(merge)
+  while (length(stack)) {
+    id <- stack[length(stack)]
+    stack <- stack[-length(stack)]
+    if (id < 0) {
+      pos <- pos + 1L
+      out[pos] <- -id
+    } else {
+      stack <- c(stack, merge[id, 2], merge[id, 1])
+    }
+  }
+  out
+}

@@ -3,6 +3,7 @@
 S3method(knit_print,Iheatmap)
 export("%>%")
 export(add_annotation)
+export(fast_hclust)
 export(add_axis)
 export(add_colorbar)
 export(add_plot)

@@ -51,7 +51,10 @@ async function decompressData(compressedData, format) {
 function bufferToTypedArray(buffer, dtype) {
   var arrayBuffer;
 
-  if (buffer instanceof Uint8Array) {
+  if (buffer instanceof Uint8Array && buffer.byteOffset === 0 &&
+      buffer.byteLength === buffer.buffer.byteLength) {
+    arrayBuffer = buffer.buffer;
+  } else if (buffer instanceof Uint8Array) {
     // Create a new ArrayBuffer to ensure proper byte alignment
     // This handles cases where the Uint8Array may be a slice with non-zero offset
     arrayBuffer = buffer.buffer.slice(
@@ -82,6 +85,32 @@ function flatArrayToMatrix(floatArray, nrows, ncols) {
   return matrix;
 }
 
+// Row-major buffers need no copy: each matrix row is a view into the buffer.
+// NA cells become NaN, which Plotly treats as missing.
+function rowViewsFromFlatArray(floatArray, nrows, ncols, naPositions) {
+  if (naPositions) {
+    for (var k = 0; k < naPositions.length; k++) {
+      floatArray[naPositions[k]] = NaN;
+    }
+  }
+  var rows = new Array(nrows);
+  for (var i = 0; i < nrows; i++) {
+    rows[i] = floatArray.subarray(i * ncols, (i + 1) * ncols);
+  }
+  return rows;
+}
+
+function isRowMajor(binaryData) {
+  return binaryData.layout === 'row-major';
+}
+
+// Index of (row, col) in the flat buffer behind trace._z_float32
+function zFlatIndex(trace, rowIdx, colIdx) {
+  var nrows = trace._z_dims[0];
+  var ncols = trace._z_dims[1];
+  return trace._z_rowmajor ? rowIdx * ncols + colIdx : colIdx * nrows + rowIdx;
+}
+
 // Restore NA values in matrix
 function restoreNAValues(matrix, naPositions, nrows) {
   if (!naPositions || naPositions.length === 0) return;
@@ -94,6 +123,17 @@ function restoreNAValues(matrix, naPositions, nrows) {
       matrix[row][col] = null;  // null is Plotly's representation of NA
     }
   }
+}
+
+function buildMatrix(floatArray, binaryData) {
+  var nrows = binaryData.dims[0];
+  var ncols = binaryData.dims[1];
+  if (isRowMajor(binaryData)) {
+    return rowViewsFromFlatArray(floatArray, nrows, ncols, binaryData.na_positions);
+  }
+  var matrix = flatArrayToMatrix(floatArray, nrows, ncols);
+  restoreNAValues(matrix, binaryData.na_positions, nrows);
+  return matrix;
 }
 
 // Decode binary-encoded matrix from trace (async for gzip support)
@@ -129,13 +169,10 @@ async function decodeBinaryMatrixAsync(binaryData) {
     naSet = new Set(binaryData.na_positions);
   }
 
-  // Convert to 2D matrix
-  var matrix = flatArrayToMatrix(floatArray, nrows, ncols);
+  var matrix = buildMatrix(floatArray, binaryData);
 
-  // Restore NA values
-  restoreNAValues(matrix, binaryData.na_positions, nrows);
-
-  return { matrix: matrix, floatArray: floatArray, dims: [nrows, ncols], naSet: naSet };
+  return { matrix: matrix, floatArray: floatArray, dims: [nrows, ncols], naSet: naSet,
+           rowMajor: isRowMajor(binaryData) };
 }
 
 // Synchronous fallback for non-compressed data
@@ -164,10 +201,10 @@ function decodeBinaryMatrixSync(binaryData) {
     naSet = new Set(binaryData.na_positions);
   }
 
-  var matrix = flatArrayToMatrix(floatArray, nrows, ncols);
-  restoreNAValues(matrix, binaryData.na_positions, nrows);
+  var matrix = buildMatrix(floatArray, binaryData);
 
-  return { matrix: matrix, floatArray: floatArray, dims: [nrows, ncols], naSet: naSet };
+  return { matrix: matrix, floatArray: floatArray, dims: [nrows, ncols], naSet: naSet,
+           rowMajor: isRowMajor(binaryData) };
 }
 
 // Process traces to decode any binary-encoded matrices (async)
@@ -186,6 +223,7 @@ async function decodeBinaryTracesAsync(data) {
           t._z_float32 = result.floatArray;
           t._z_dims = result.dims;
           t._z_na = result.naSet;
+          t._z_rowmajor = result.rowMajor;
           delete t.z_binary;
         });
         promises.push(promise);
@@ -209,6 +247,7 @@ function decodeBinaryTraces(data) {
         trace._z_float32 = result.floatArray;
         trace._z_dims = result.dims;
         trace._z_na = result.naSet;
+        trace._z_rowmajor = result.rowMajor;
         delete trace.z_binary;
       }
       // If null (gzip), leave z_binary for async processing
@@ -254,47 +293,51 @@ function expandImplicitCoordinates(data) {
   return data;
 }
 
-// Decode compact dendrogram binary data into Plotly shapes (async for zlib support)
-async function decodeCompactDendrograms(compactDendros, existingShapes) {
-  if (!compactDendros || compactDendros.length === 0) {
-    return existingShapes || [];
-  }
-
-  var shapes = existingShapes ? existingShapes.slice() : [];
+// Decode compact dendrogram binary data into one line trace per dendrogram.
+// A single null-separated trace is one SVG path; per-segment layout shapes are
+// one DOM node each and get redrawn on every zoom.
+async function decodeCompactDendrograms(compactDendros) {
+  var traces = [];
+  if (!compactDendros) return traces;
 
   for (var i = 0; i < compactDendros.length; i++) {
     var dendro = compactDendros[i];
     if (!dendro.coords_binary || !dendro.n_segments) continue;
 
-    // Decode binary coordinates
     var rawBytes = base64ToUint8Array(dendro.coords_binary);
-
-    // Decompress if zlib encoded
     if (dendro.encoding === 'base64-zlib') {
       rawBytes = await decompressData(rawBytes, 'zlib');
     }
 
-    var dtype = dendro.dtype || 'float32';
-    var floatArray = bufferToTypedArray(rawBytes, dtype);
+    var floatArray = bufferToTypedArray(rawBytes, dendro.dtype || 'float32');
 
     // Each segment has 4 coordinates: x0, x1, y0, y1
     var n = dendro.n_segments;
+    var xs = new Array(n * 3);
+    var ys = new Array(n * 3);
     for (var j = 0; j < n; j++) {
       var offset = j * 4;
-      shapes.push({
-        x0: floatArray[offset],
-        x1: floatArray[offset + 1],
-        y0: floatArray[offset + 2],
-        y1: floatArray[offset + 3],
-        type: 'line',
-        xref: dendro.xref,
-        yref: dendro.yref,
-        line: { color: dendro.color || 'gray' }
-      });
+      xs[j * 3] = floatArray[offset];
+      xs[j * 3 + 1] = floatArray[offset + 1];
+      xs[j * 3 + 2] = null;
+      ys[j * 3] = floatArray[offset + 2];
+      ys[j * 3 + 1] = floatArray[offset + 3];
+      ys[j * 3 + 2] = null;
     }
+    traces.push({
+      type: 'scatter',
+      mode: 'lines',
+      x: xs,
+      y: ys,
+      xaxis: dendro.xref,
+      yaxis: dendro.yref,
+      line: { color: dendro.color || 'gray', width: 1 },
+      hoverinfo: 'skip',
+      showlegend: false
+    });
   }
 
-  return shapes;
+  return traces;
 }
 
 // Sanitize text for safe HTML display (prevent XSS)
@@ -362,7 +405,7 @@ function generateLazyTooltip(trace, rowIdx, colIdx) {
       var nrows = trace._z_dims[0];
       var ncols = trace._z_dims[1];
       if (rowIdx >= 0 && rowIdx < nrows && colIdx >= 0 && colIdx < ncols) {
-        var flatIdx = colIdx * nrows + rowIdx;
+        var flatIdx = zFlatIndex(trace, rowIdx, colIdx);
         if (trace._z_na && trace._z_na.has(flatIdx)) {
           value = null;
         } else {
@@ -510,6 +553,114 @@ function setupLazyTooltipHandlers(graphDiv, data) {
   };
 }
 
+// add_row_labels / add_col_labels emit one layout annotation (one SVG text node
+// plus layout work) per label. At tens of thousands of samples that exhausts
+// renderer memory, so label groups larger than this are thinned to what fits the
+// visible range and re-thinned on zoom.
+var MAX_FULL_LABELS = 400;
+var LABEL_PX = 14;
+
+function axisKeyFromRef(ref) {
+  return ref.charAt(0) + 'axis' + ref.slice(1);
+}
+
+// The coordinate that varies within a label group is the one along its axis
+function labelAlongKey(group) {
+  var a = group[0], b = group[1];
+  return a.x !== b.x ? 'x' : 'y';
+}
+
+function thinLabelGroup(group, along, lo, hi, maxLabels) {
+  var inRange = group.filter(function(a) { return a[along] >= lo && a[along] <= hi; });
+  var stride = Math.max(1, Math.ceil(inRange.length / maxLabels));
+  if (stride === 1) return inRange;
+  return inRange.filter(function(a, k) { return k % stride === 0; });
+}
+
+function visibleRange(layoutOrFull, axisKey) {
+  var ax = layoutOrFull && layoutOrFull[axisKey];
+  var r = ax && ax.range;
+  return r ? [Math.min(r[0], r[1]), Math.max(r[0], r[1])] : [-Infinity, Infinity];
+}
+
+// Called before the first render: replaces oversized label groups in the layout
+function thinLayoutLabels(graphDiv, layout) {
+  graphDiv._fullLabels = null;
+  var anns = layout.annotations;
+  if (!Array.isArray(anns) || anns.length <= MAX_FULL_LABELS) return;
+
+  var groups = {};
+  anns.forEach(function(a) {
+    if (a.showarrow !== false || !a.xref || !a.yref) return;
+    var key = a.xref + '|' + a.yref + '|' + (a.textangle || 0);
+    (groups[key] = groups[key] || []).push(a);
+  });
+
+  var big = {};
+  Object.keys(groups).forEach(function(key) {
+    if (groups[key].length > MAX_FULL_LABELS) {
+      var g = groups[key];
+      var along = labelAlongKey(g);
+      var ref = g[0][along === 'x' ? 'xref' : 'yref'];
+      var ax = layout[axisKeyFromRef(ref)];
+      big[key] = { all: g, along: along, ref: ref, initialRange: ax && ax.range };
+    }
+  });
+  if (!Object.keys(big).length) return;
+
+  var others = anns.filter(function(a) {
+    return !big[a.xref + '|' + a.yref + '|' + (a.textangle || 0)];
+  });
+  graphDiv._fullLabels = { big: big, others: others };
+  layout.annotations = others.concat(rethinned(graphDiv, layout, null));
+}
+
+function rethinned(graphDiv, layoutOrFull, d) {
+  var out = [];
+  var big = graphDiv._fullLabels.big;
+  Object.keys(big).forEach(function(key) {
+    var b = big[key];
+    var axisKey = axisKeyFromRef(b.ref);
+    var range = visibleRange(layoutOrFull, axisKey);
+    if (d) {
+      var lo = d[axisKey + '.range[0]'], hi = d[axisKey + '.range[1]'];
+      if (d[axisKey + '.range'] !== undefined) { lo = d[axisKey + '.range'][0]; hi = d[axisKey + '.range'][1]; }
+      if (lo !== undefined && hi !== undefined) range = [Math.min(lo, hi), Math.max(lo, hi)];
+    }
+    var fl = graphDiv._fullLayout && graphDiv._fullLayout[axisKey];
+    var px = fl && fl._length ? fl._length : 800;
+    out = out.concat(thinLabelGroup(b.all, b.along, range[0], range[1],
+                                    d ? Math.max(10, Math.floor(px / LABEL_PX)) : MAX_FULL_LABELS / 2));
+  });
+  return out;
+}
+
+// Called on plotly_relayout: re-thins labels when an axis range changes.
+// Plotly's autorange also looks at annotations, so with thinned labels it would
+// fit only the visible ones; reset to the layout's original range instead.
+function rethinLabelsOnRelayout(graphDiv, d) {
+  var full = graphDiv._fullLabels;
+  if (!full || !d) return;
+  var update = {};
+  var d2 = Object.assign({}, d);
+  var touched = false;
+  Object.keys(full.big).forEach(function(key) {
+    var b = full.big[key];
+    var axisKey = axisKeyFromRef(b.ref);
+    if (d[axisKey + '.autorange'] && b.initialRange) {
+      d2[axisKey + '.range'] = b.initialRange;
+      update[axisKey + '.range'] = b.initialRange;
+      update[axisKey + '.autorange'] = false;
+      touched = true;
+    } else if (d[axisKey + '.range[0]'] !== undefined || d[axisKey + '.range'] !== undefined) {
+      touched = true;
+    }
+  });
+  if (!touched) return;  // includes the relayout this function issues itself
+  update.annotations = full.others.concat(rethinned(graphDiv, graphDiv._fullLayout, d2));
+  Plotly.relayout(graphDiv, update);
+}
+
 HTMLWidgets.widget({
   name: "iheatmapr",
   type: "output",
@@ -567,6 +718,7 @@ HTMLWidgets.widget({
 
     // Expand implicit coordinates (x_implicit/y_implicit -> full arrays)
     expandImplicitCoordinates(x.data);
+    thinLayoutLabels(graphDiv, x.layout);
 
     // Store current data and source on instance so event handlers always
     // reference latest values (not stale closures from first renderValue call)
@@ -606,7 +758,7 @@ HTMLWidgets.widget({
             var zNrows = tr._z_dims[0];
             var zNcols = tr._z_dims[1];
             if (rowIdx >= 0 && rowIdx < zNrows && colIdx >= 0 && colIdx < zNcols) {
-              var flatIdx = colIdx * zNrows + rowIdx;
+              var flatIdx = zFlatIndex(tr, rowIdx, colIdx);
               if (tr._z_na && tr._z_na.has(flatIdx)) {
                 obj.z = null;
               } else {
@@ -651,6 +803,7 @@ HTMLWidgets.widget({
       // Re-attach colorbar hover handlers after plotly redraws
       graphDiv.on('plotly_relayout', function(d) {
         scheduleColorbarHandlers();
+        rethinLabelsOnRelayout(graphDiv, d);
 
         if (shinyMode) {
           Shiny.onInputChange(
@@ -761,9 +914,10 @@ HTMLWidgets.widget({
 
           // Decode compact dendrograms (now with zlib compression)
           if (hasCompactDendros) {
-            x.layout.shapes = await decodeCompactDendrograms(
-              x.compact_dendrograms,
-              x.layout.shapes
+            // Push in place: instance.currentData aliases x.data
+            Array.prototype.push.apply(
+              x.data,
+              await decodeCompactDendrograms(x.compact_dendrograms)
             );
             delete x.compact_dendrograms;
           }
