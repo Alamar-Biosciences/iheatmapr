@@ -105,12 +105,22 @@ function rowViewsFromFlatArray(floatArray, nrows, ncols, naPositions) {
 // 16-bit quantized values back to floats; step is the quantization step
 function dequantize(q, binaryData) {
   var lo = parseFloat(binaryData.q_min), hi = parseFloat(binaryData.q_max);
-  var step = (hi - lo) / 65535;
+  var step = (hi - lo) / (Math.pow(2, binaryData.q_bits || 16) - 1);
   var out = new Float32Array(q.length);
   for (var i = 0; i < q.length; i++) {
     out[i] = lo + q[i] * step;
   }
   return { values: out, step: step };
+}
+
+// Two 12-bit values per 3 bytes (see encode_matrix_binary); count values out
+function unpack12(bytes, count) {
+  var out = new Uint16Array(count + (count % 2));
+  for (var i = 0, j = 0; j < out.length; i += 3, j += 2) {
+    out[j] = bytes[i] | ((bytes[i + 1] & 15) << 8);
+    out[j + 1] = (bytes[i + 1] >> 4) | (bytes[i + 2] << 4);
+  }
+  return count % 2 ? out.subarray(0, count) : out;
 }
 
 function isRowMajor(binaryData) {
@@ -174,9 +184,11 @@ async function decodeBinaryMatrixAsync(binaryData) {
   }
 
   // Convert to appropriate typed array
-  var floatArray = bufferToTypedArray(decodedBytes, dtype);
+  var floatArray = dtype === 'uint12'
+    ? unpack12(decodedBytes, nrows * ncols)
+    : bufferToTypedArray(decodedBytes, dtype);
   var quantStep = 0;
-  if (dtype === 'uint16') {
+  if (dtype === 'uint16' || dtype === 'uint12') {
     var dq = dequantize(floatArray, binaryData);
     floatArray = dq.values;
     quantStep = dq.step;
@@ -213,9 +225,11 @@ function decodeBinaryMatrixSync(binaryData) {
   var dtype = binaryData.dtype || 'float64';
 
   var rawBytes = base64ToUint8Array(binaryData.data_binary);
-  var floatArray = bufferToTypedArray(rawBytes, dtype);
+  var floatArray = dtype === 'uint12'
+    ? unpack12(rawBytes, nrows * ncols)
+    : bufferToTypedArray(rawBytes, dtype);
   var quantStep = 0;
-  if (dtype === 'uint16') {
+  if (dtype === 'uint16' || dtype === 'uint12') {
     var dq = dequantize(floatArray, binaryData);
     floatArray = dq.values;
     quantStep = dq.step;
@@ -434,8 +448,9 @@ function generateLazyTooltip(trace, rowIdx, colIdx) {
   // was released after Plotly consumed it (Optimization 2).
   if (lt.show_value) {
     var value;
-    if (cell.n > 1) {
-      // Binned overview cell: show the mean the heatmap is drawn with
+    if (cell.n > 1 || trace._lazy) {
+      // Binned overview cell: show the mean the heatmap is drawn with; lazy
+      // traces have no full buffer, only the displayed (exact when zoomed) cells
       value = trace.z && trace.z[shownRow] ? trace.z[shownRow][shownCol] : undefined;
     } else if (trace._z_float32 && trace._z_dims) {
       // Column-major layout from R: flatIdx = col * nrows + row
@@ -456,7 +471,7 @@ function generateLazyTooltip(trace, rowIdx, colIdx) {
       // Fallback for non-binary traces
       value = trace.z[rowIdx][colIdx];
     }
-    if (value !== null && value !== undefined) {
+    if (value !== null && value !== undefined && value === value) {
       // Format to 3 significant figures for display
       var formatted = value;
       if (typeof value === 'number') {
@@ -723,6 +738,28 @@ function expandLabelGroups(x) {
   delete x.label_groups;
 }
 
+// compact_hover_text() replaces an annotation bar's per-cell text with a
+// prefix, a reference to the main heatmap's labels, and a dictionary
+function expandHoverText(data) {
+  var main = null;
+  data.forEach(function(t) { if (!main && t.lazy_tooltip) main = t.lazy_tooltip; });
+  data.forEach(function(t) {
+    var h = t.hover_compact;
+    if (!h) return;
+    var labels = h.orient === 'col' ? main && main.col_labels : main && main.row_labels;
+    if (!labels || labels.length !== h.idx.length) {
+      delete t.hover_compact;
+      return;
+    }
+    var cells = new Array(labels.length);
+    for (var i = 0; i < labels.length; i++) {
+      cells[i] = h.prefix + labels[i] + '<br>' + h.tails[h.idx[i]];
+    }
+    t.text = h.orient === 'col' ? [cells] : cells.map(function(c) { return [c]; });
+    delete t.hover_compact;
+  });
+}
+
 // ---- Level of detail --------------------------------------------------------
 // Plotly redraws every cell of a heatmap trace on each relayout, which costs
 // seconds at millions of cells. Large row-major heatmaps are therefore drawn
@@ -733,6 +770,7 @@ var LOD_MIN_CELLS = 500000;
 var LOD_BUDGET_CELLS = 400000;
 
 function lodEligible(trace) {
+  if (trace._lazy) return !!(trace._x_seq && trace._y_seq);
   return !!(trace._z_float32 && trace._z_rowmajor && trace._z_dims &&
             trace._x_seq && trace._y_seq &&
             trace._z_dims[0] * trace._z_dims[1] >= LOD_MIN_CELLS);
@@ -802,6 +840,18 @@ function lodInit(data, layout) {
   data.forEach(function(trace) {
     trace._lod = null;
     if (!lodEligible(trace)) return;
+    if (trace._lazy) {
+      // The inline overview is the whole matrix at the factors R chose
+      var ov = trace._lazy.ov, nr = trace._z_dims[0], nc = trace._z_dims[1];
+      var d0 = { r0: 0, r1: nr, c0: 0, c1: nc, fr: ov.fr, fc: ov.fc,
+                 visR0: 0, visR1: nr, visC0: 0, visC1: nc };
+      trace.z = ov.rows;
+      delete trace.x;
+      delete trace.y;
+      Object.assign(trace, lodTraceProps(d0));
+      trace._lod = d0;
+      return;
+    }
     var xr = lodAxisRange(layout[axisKeyFromRef(trace.xaxis || 'x')]);
     var yr = lodAxisRange(layout[axisKeyFromRef(trace.yaxis || 'y')]);
     var d = lodDesired(trace, xr, yr);
@@ -810,6 +860,48 @@ function lodInit(data, layout) {
     delete trace.y;
     Object.assign(trace, lodTraceProps(d));
     trace._lod = d;
+  });
+}
+
+// Traces sent with an inline overview only: the full matrix stays on the
+// server and windows are fetched as raw float32 bytes (see lazy_window_trace)
+function lazyInit(data) {
+  data.forEach(function(trace) {
+    var lw = trace.lazy_window;
+    if (!lw) return;
+    trace._z_dims = lw.dims;
+    trace._lazy = { url: lw.url, ov: { rows: trace.z, fr: lw.fr, fc: lw.fc } };
+    // Windows are exact and the overview is labelled as a mean, so the
+    // quantization step must not shorten tooltip digits
+    trace._z_step = 0;
+    delete trace._z_float32;
+    delete trace._z_na;
+    delete trace.lazy_window;
+  });
+}
+
+// Rows for window d: the cached overview, a local slice, or a server fetch
+// (a Promise). Cells come back as float32, NaN where there is no value.
+function lodWindow(trace, d) {
+  var lz = trace._lazy;
+  if (!lz) return lodBuild(trace, d);
+  var nr = trace._z_dims[0], nc = trace._z_dims[1];
+  if (d.r0 === 0 && d.c0 === 0 && d.r1 === nr && d.c1 === nc &&
+      d.fr === lz.ov.fr && d.fc === lz.ov.fc) {
+    return lz.ov.rows;
+  }
+  var nrows = Math.ceil((d.r1 - d.r0) / d.fr), ncols = Math.ceil((d.c1 - d.c0) / d.fc);
+  var url = lz.url + '&r0=' + d.r0 + '&r1=' + d.r1 + '&c0=' + d.c0 + '&c1=' + d.c1 +
+            '&fr=' + d.fr + '&fc=' + d.fc;
+  return fetch(url, { cache: 'no-store' }).then(function(resp) {
+    if (!resp.ok) throw new Error('heatmap window request failed: ' + resp.status);
+    return resp.arrayBuffer();
+  }).then(function(buf) {
+    var f = new Float32Array(buf);
+    if (f.length !== nrows * ncols) throw new Error('heatmap window has the wrong size');
+    var rows = new Array(nrows);
+    for (var i = 0; i < nrows; i++) rows[i] = f.subarray(i * ncols, (i + 1) * ncols);
+    return rows;
   });
 }
 
@@ -848,23 +940,35 @@ function applyAdaptiveUpdates(graphDiv, d) {
   var changes = lodChangesFor(graphDiv, overrides);
   if (!layoutUpdate && !changes.length) return;
 
-  var dataUpdate = { z: [], x0: [], dx: [], y0: [], dy: [] };
-  var indices = [];
-  changes.forEach(function(c) {
-    var trace = graphDiv.data[c.idx], props = lodTraceProps(c.d);
-    trace._lod = c.d;
-    dataUpdate.z.push(lodBuild(trace, c.d));
-    dataUpdate.x0.push(props.x0);
-    dataUpdate.dx.push(props.dx);
-    dataUpdate.y0.push(props.y0);
-    dataUpdate.dy.push(props.dy);
-    indices.push(c.idx);
+  // Windows may need a server round trip; a newer pass supersedes this one
+  var seq = graphDiv._adaptSeq = (graphDiv._adaptSeq || 0) + 1;
+  var windows = changes.map(function(c) { return lodWindow(graphDiv.data[c.idx], c.d); });
+  var apply = function(rowsList) {
+    if (seq !== graphDiv._adaptSeq) return;
+    var dataUpdate = { z: [], x0: [], dx: [], y0: [], dy: [] };
+    var indices = [];
+    if (rowsList) {
+      changes.forEach(function(c, k) {
+        var trace = graphDiv.data[c.idx], props = lodTraceProps(c.d);
+        trace._lod = c.d;
+        dataUpdate.z.push(rowsList[k]);
+        dataUpdate.x0.push(props.x0);
+        dataUpdate.dx.push(props.dx);
+        dataUpdate.y0.push(props.y0);
+        dataUpdate.dy.push(props.dy);
+        indices.push(c.idx);
+      });
+    }
+    if (!layoutUpdate && !indices.length) return;
+    graphDiv._selfRelayout = true;
+    var done = function() { graphDiv._selfRelayout = false; };
+    Plotly.update(graphDiv, indices.length ? dataUpdate : {}, layoutUpdate || {},
+                  indices.length ? indices : undefined).then(done, done);
+  };
+  Promise.all(windows).then(apply, function(err) {
+    console.warn('iheatmapr: keeping the current heatmap detail.', err);
+    apply(null);  // labels still follow the view
   });
-
-  graphDiv._selfRelayout = true;
-  var done = function() { graphDiv._selfRelayout = false; };
-  Plotly.update(graphDiv, indices.length ? dataUpdate : {}, layoutUpdate || {},
-                indices.length ? indices : undefined).then(done, done);
 }
 
 function scheduleAdaptiveUpdate(graphDiv, d) {
@@ -943,6 +1047,7 @@ HTMLWidgets.widget({
 
     // Expand implicit coordinates (x_implicit/y_implicit -> full arrays)
     expandImplicitCoordinates(x.data);
+    expandHoverText(x.data);
     expandLabelGroups(x);
     thinLayoutLabels(graphDiv, x.layout);
 
@@ -1089,6 +1194,7 @@ HTMLWidgets.widget({
 
       // Use Plotly.react for subsequent renders to avoid full DOM teardown/rebuild,
       // which eliminates the peak memory spike from old + new graph coexisting.
+      lazyInit(x.data);
       lodInit(x.data, x.layout);
       var renderFn = isFirstRender ? Plotly.newPlot : Plotly.react;
 
@@ -1132,6 +1238,9 @@ HTMLWidgets.widget({
         if (isFirstRender || prevTraceCount !== instance.traceCount) {
           setupEventHandlers();
         }
+
+        // The layout's initial range may already be zoomed in
+        scheduleAdaptiveUpdate(graphDiv, {});
 
         // Reveal now that the new plot is painted
         graphDiv.classList.remove('iheatmapr-rendering');

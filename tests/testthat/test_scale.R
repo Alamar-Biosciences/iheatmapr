@@ -142,3 +142,99 @@ test_that("compact_label_annotations keeps positions that are a permutation", {
   key <- function(a) paste(a$xref, a$yref, a$text, a$x, a$y, sep = "|")
   expect_setequal(vapply(expand_label_groups(out), key, ""), vapply(before, key, ""))
 })
+
+test_that("window_bins averages blocks counted from the window corner and skips NA", {
+  set.seed(1)
+  m <- matrix(rnorm(7 * 10), 7, 10)
+  m[2, 3] <- NA
+  expect_equal(window_bins(m, 1, 6, 2, 9, 1, 1), m[2:6, 3:9])
+  b <- window_bins(m, 1, 6, 2, 9, 2, 3)  # 5 x 7 window -> 3 x 3 blocks
+  expect_equal(dim(b), c(3, 3))
+  sub <- m[2:6, 3:9]
+  expect_equal(b[1, 1], mean(sub[1:2, 1:3], na.rm = TRUE))
+  expect_equal(b[3, 3], mean(sub[5, 7]))           # ragged last block
+  expect_equal(b[2, 2], mean(sub[3:4, 4:6]))
+  m2 <- matrix(NA_real_, 4, 4)
+  expect_true(all(is.nan(window_bins(m2, 0, 4, 0, 4, 2, 2))))
+})
+
+test_that("lod_factors keeps a window under the budget", {
+  expect_equal(unname(lod_factors(250, 26400)), c(1, 32))
+  expect_equal(unname(lod_factors(26400, 250)), c(32, 1))
+  expect_equal(unname(lod_factors(100, 100)), c(1, 1))
+  f <- lod_factors(5000, 5000)
+  expect_lte(ceiling(5000 / f[["fr"]]) * ceiling(5000 / f[["fc"]]), 4e5)
+})
+
+test_that("lazy_window_handler serves float32 windows and rejects bad requests", {
+  skip_if_not_installed("shiny")
+  m <- matrix(as.numeric(1:60), 6, 10)
+  m[2, 2] <- NA
+  req <- function(q) list(QUERY_STRING = q)
+  ok <- lazy_window_handler(list(m = m), req("?w=x&r0=1&r1=4&c0=2&c1=8&fr=1&fc=1"))
+  expect_equal(ok$status, 200L)
+  vals <- readBin(ok$content, "numeric", n = 3 * 6, size = 4)
+  expect_equal(vals, as.vector(t(m[2:4, 3:8])))
+  nan <- lazy_window_handler(list(m = m), req("?r0=0&r1=2&c0=0&c1=2&fr=2&fc=2"))
+  expect_equal(readBin(nan$content, "numeric", n = 1, size = 4), mean(m[1:2, 1:2], na.rm = TRUE),
+               tolerance = 1e-6)
+  for (q in c("?r0=0&r1=2&c0=0&c1=2&fr=0&fc=1", "?r0=0&r1=99&c0=0&c1=2&fr=1&fc=1",
+              "?r0=a&r1=2&c0=0&c1=2&fr=1&fc=1", "?r0=0&r1=2&c0=0&c1=2")) {
+    expect_equal(lazy_window_handler(list(m = m), req(q))$status, 400L)
+  }
+})
+
+test_that("compact_hover_text round-trips annotation bar hover text", {
+  set.seed(1)
+  n <- 1500
+  m <- matrix(rnorm(8 * n), 8, n, dimnames = list(paste0("T", 1:8), sprintf("S%04d", 1:n)))
+  grp <- sample(c("A", "B", "C"), n, TRUE)
+  hm <- main_heatmap(m, tooltip = setup_tooltip_options(prepend_col = "Sample: ")) %>%
+    add_col_groups(grp, name = "Group", title = "Group")
+  l <- to_plotly_list(hm)
+  bar <- which(vapply(l$data, function(d) identical(d$hoverinfo, "text"), NA))
+  expect_length(bar, 1)
+  # Callers (NAS) rewrite the bar text to "<prefix><sample label><br><title>: <value>"
+  labels <- l$iheatmapr_custom[["1"]]$lazy_tooltip$col_labels
+  before <- sprintf("Sample: %s<br>Group: %s", labels, grp)
+  l$data[[bar]]$text <- matrix(before, nrow = 1)
+  out <- compact_hover_text(l)
+  h <- out$data[[bar]]$hover_compact
+  expect_null(out$data[[bar]]$text)
+  expect_equal(h$orient, "col")
+  expect_equal(h$prefix, "Sample: ")
+  expect_lte(length(h$tails), 3)
+  expect_equal(paste0(h$prefix, labels, "<br>", h$tails[h$idx + 1L]), before)
+  # a bar whose text does not start with the main heatmap labels is left alone
+  l2 <- l
+  l2$iheatmapr_custom[["1"]]$lazy_tooltip$col_labels <- rev(labels)
+  expect_false(is.null(compact_hover_text(l2)$data[[bar]]$text))
+})
+
+decode_uint12 <- function(enc) {
+  b <- as.integer(base64enc::base64decode(enc$data_binary))
+  i <- seq(1, length(b), by = 3)
+  as.vector(rbind(b[i] + bitwShiftL(bitwAnd(b[i + 1], 15L), 8L),
+                  bitwShiftR(b[i + 1], 4L) + bitwShiftL(b[i + 2], 4L)))[seq_len(prod(enc$dims))]
+}
+
+test_that("12-bit quantization is within half a step and 25% smaller than 16-bit", {
+  set.seed(1)
+  for (dims in list(c(6, 10), c(5, 7))) {  # even and odd cell counts
+    m <- matrix(rnorm(prod(dims), sd = 5), dims[1], dims[2])
+    m[1, 2] <- NA
+    enc <- encode_matrix_binary(m, quantize = TRUE, quantize_bits = 12)
+    expect_equal(enc$dtype, "uint12")
+    expect_equal(enc$q_bits, 12)
+    lo <- as.numeric(enc$q_min)
+    hi <- as.numeric(enc$q_max)
+    decoded <- lo + decode_uint12(enc) * (hi - lo) / 4095
+    truth <- as.vector(t(pmin(pmax(replace(m, is.na(m), 0), lo), hi)))
+    expect_lte(max(abs(decoded - truth)), (hi - lo) / 8190 + 1e-12)
+  }
+  big <- matrix(rnorm(40000), 200, 200)
+  r12 <- nchar(encode_matrix_binary(big, quantize = TRUE, quantize_bits = 12)$data_binary)
+  r16 <- nchar(encode_matrix_binary(big, quantize = TRUE)$data_binary)
+  expect_equal(r12 / r16, 0.75, tolerance = 0.01)
+  expect_error(encode_matrix_binary(big, quantize = TRUE, quantize_bits = 8), "12 or 16")
+})
