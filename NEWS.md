@@ -1,3 +1,9 @@
+# iheatmapr 0.4.11
+
+* Matrices are sent row-major (`z_binary$layout`); the binding version is bumped so browsers do not reuse a cached script that reads them as column-major.
+* Label annotations are thinned to the visible range, so heatmaps with tens of thousands of samples render.
+* Adds `fast_hclust()` and the `hclust_fun` argument of `add_row_clustering()` / `add_col_clustering()`.
+
 # iheatmapr 0.4.10
 
 * Exports to_plotly_list and adds new to_plotly_json to make it easier to convert to plotly spec

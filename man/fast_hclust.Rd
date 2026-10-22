@@ -38,8 +38,8 @@ offered. Both return an `hclust` object with one leaf per row.
 \details{
 * `approx = "pca"`: cluster on the first `npcs` principal components.
   Euclidean distance only.
-* `approx = "kmeans"`: run k-means with `ncenters` centers, cluster the
-  centers, then graft each center's members back in as a zero-height
+* `approx = "kmeans"`: reduce to `npcs` principal components, run k-means
+  with `ncenters` centers, cluster the centers, then graft each center's members back in as a zero-height
   subtree. Members of one center stay adjacent and are not ordered among
   themselves. Euclidean distance only.
 

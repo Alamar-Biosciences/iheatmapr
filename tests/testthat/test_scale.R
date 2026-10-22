@@ -7,6 +7,15 @@ test_that("fast_hclust matches stats::hclust for exact ward.D2", {
   expect_equal(fast_hclust(x)$order, stats::hclust(dist(x), "ward.D2")$order)
 })
 
+test_that("fast_hclust handles NA like stats::hclust, and approximations reject it", {
+  set.seed(1)
+  x <- matrix(rnorm(200), 40, 5)
+  x[3, 2] <- NA
+  expect_equal(fast_hclust(x)$order, stats::hclust(dist(x), "ward.D2")$order)
+  expect_error(fast_hclust(x, approx = "pca"), "without NA")
+  expect_error(fast_hclust(x, approx = "kmeans"), "without NA")
+})
+
 test_that("approximate fast_hclust returns a valid tree over every row", {
   set.seed(1)
   x <- matrix(rnorm(600 * 8), 600, 8)

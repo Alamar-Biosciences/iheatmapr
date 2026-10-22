@@ -221,8 +221,8 @@ setMethod(add_col_clustering,
 #'
 #' * `approx = "pca"`: cluster on the first `npcs` principal components.
 #'   Euclidean distance only.
-#' * `approx = "kmeans"`: run k-means with `ncenters` centers, cluster the
-#'   centers, then graft each center's members back in as a zero-height
+#' * `approx = "kmeans"`: reduce to `npcs` principal components, run k-means
+#'   with `ncenters` centers, cluster the centers, then graft each center's members back in as a zero-height
 #'   subtree. Members of one center stay adjacent and are not ordered among
 #'   themselves. Euclidean distance only.
 #'
@@ -251,9 +251,10 @@ fast_hclust <- function(x, method = "ward.D2", dist_method = "euclidean",
   if (approx != "none" && dist_method != "euclidean") {
     stop("approx = \"", approx, "\" requires dist_method = \"euclidean\"")
   }
-  if (approx == "pca" && ncol(x) > npcs && nrow(x) > npcs) {
+  if (approx != "none" && ncol(x) > npcs && nrow(x) > npcs) {
     x <- stats::prcomp(x, center = TRUE, scale. = FALSE, rank. = npcs)$x
-  } else if (approx == "kmeans" && nrow(x) > ncenters) {
+  }
+  if (approx == "kmeans" && nrow(x) > ncenters) {
     return(hclust_via_kmeans(x, method, ncenters))
   }
   exact_hclust(x, method, dist_method)
@@ -261,7 +262,8 @@ fast_hclust <- function(x, method = "ward.D2", dist_method = "euclidean",
 
 exact_hclust <- function(x, method, dist_method) {
   vector_methods <- c(ward.D2 = "ward", centroid = "centroid", median = "median")
-  if (dist_method == "euclidean" && method %in% names(vector_methods) &&
+  # hclust.vector cannot see NA; dist() rescales over the non-missing pairs
+  if (dist_method == "euclidean" && method %in% names(vector_methods) && !anyNA(x) &&
       requireNamespace("fastcluster", quietly = TRUE)) {
     return(fastcluster::hclust.vector(x, method = unname(vector_methods[method]),
                                       metric = "euclidean"))

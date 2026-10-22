@@ -7,7 +7,7 @@ categorical_ticks <- function(ax, tickvals, ticktext){
     } else{
       ticktext <- as.character(ticktext)
       if (all(ticktext %in% axis_text(ax))){
-        ix <- vapply(ticktext, function(x) which(axis_text(ax) == x), 1L)
+        ix <- match(ticktext, axis_text(ax))
         tickvals <- tickvals[ix]
       } else if (length(ticktext) != length(tickvals))
         stop(paste("Provided ticktext is invalid,",
@@ -20,7 +20,7 @@ categorical_ticks <- function(ax, tickvals, ticktext){
       if (!all(tickvals %in% axis_values(ax)))
         stop("Provided tick values invalid, must match positions or rows")
       ticktext <- axis_text(ax)
-      ix <- vapply(tickvals, function(x) which(axis_values(ax) == x), 1L)
+      ix <- match(tickvals, axis_values(ax))
       ticktext <- ticktext[ix]
     } else{
       ticktext <- as.character(ticktext)
@@ -51,8 +51,7 @@ continuous_ticks <- function(ax, tickvals, ticktext){
       ticktext <- as.character(ticktext)
       tickvals <- axis_values(ax)
       if (all(ticktext %in% axis_text(ax))){
-        ix <- vapply(ticktext,
-                     function(x) which(axis_text(ax) == x), 1L)
+        ix <- match(ticktext, axis_text(ax))
         tickvals <- tickvals[ix]
       } else if (length(ticktext) != length(tickvals))
         stop("Provided ticktext is invalid,",
@@ -64,7 +63,7 @@ continuous_ticks <- function(ax, tickvals, ticktext){
      if (!all(tickvals %in% axis_values(ax)))
         stop("Provided tick values invalid, must match positions or rows")
       ticktext <- axis_text(ax)
-      ix <- vapply(tickvals, function(x) which(axis_values(ax) == x), 1L)
+      ix <- match(tickvals, axis_values(ax))
       ticktext <- ticktext[ix]
     } else{
       ticktext <- as.character(ticktext)
@@ -152,8 +151,7 @@ setMethod("make_annotations", signature = c(x = "RowLabels"),
             ticktext <- get_data(x)
             
             if (ya@categorical){
-              tickvals <- vapply(tickvals,
-                                 function(x) which(ya@order == x)[1], 1L)
+              tickvals <- match(tickvals, ya@order)
             }
 
             a <-  lapply(seq_along(tickvals),
@@ -184,8 +182,7 @@ setMethod("make_annotations", signature = c(x = "ColumnLabels"),
             ticktext <- get_data(x)
             
             if (xa@categorical){
-              tickvals <- vapply(tickvals,
-                                 function(x) which(xa@order == x)[1], 1L)
+              tickvals <- match(tickvals, xa@order)
             }
             
             a <-  lapply(seq_along(tickvals),

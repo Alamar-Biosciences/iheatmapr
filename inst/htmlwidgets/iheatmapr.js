@@ -294,8 +294,8 @@ function expandImplicitCoordinates(data) {
 }
 
 // Decode compact dendrogram binary data into one line trace per dendrogram.
-// A single null-separated trace is one SVG path; per-segment layout shapes are
-// one DOM node each and get redrawn on every zoom.
+// Plotly still draws one path per segment, but a trace avoids the extra shape
+// DOM nodes and layout objects that one layout shape per segment costs.
 async function decodeCompactDendrograms(compactDendros) {
   var traces = [];
   if (!compactDendros) return traces;
@@ -649,7 +649,7 @@ function rethinLabelsOnRelayout(graphDiv, d) {
     var axisKey = axisKeyFromRef(b.ref);
     if (d[axisKey + '.autorange'] && b.initialRange) {
       d2[axisKey + '.range'] = b.initialRange;
-      update[axisKey + '.range'] = b.initialRange;
+      update[axisKey + '.range'] = b.initialRange.slice();
       update[axisKey + '.autorange'] = false;
       touched = true;
     } else if (d[axisKey + '.range[0]'] !== undefined || d[axisKey + '.range'] !== undefined) {
@@ -659,7 +659,8 @@ function rethinLabelsOnRelayout(graphDiv, d) {
   if (!touched) return;  // includes the relayout this function issues itself
   update.annotations = full.others.concat(rethinned(graphDiv, graphDiv._fullLayout, d2));
   graphDiv._selfRelayout = true;
-  Plotly.relayout(graphDiv, update).then(function() { graphDiv._selfRelayout = false; });
+  var done = function() { graphDiv._selfRelayout = false; };
+  Plotly.relayout(graphDiv, update).then(done, done);
 }
 
 HTMLWidgets.widget({
@@ -872,9 +873,10 @@ HTMLWidgets.widget({
         // iheatmapr copy is no longer needed. This frees ~13-40 MB at 6500x250.
         for (var i = 0; i < x.data.length; i++) {
           // Row-major z rows are views of _z_float32, so releasing them frees
-          // nothing, and a later relayout (label re-thinning) rebuilds the
-          // trace from gd.data and would blank the heatmap.
-          if (x.data[i]._z_float32 && !x.data[i]._z_rowmajor) {
+          // nothing. Any later relayout that carries annotations (label
+          // re-thinning) rebuilds the trace from gd.data and would blank the
+          // heatmap, so z is only released when no label group is thinned.
+          if (x.data[i]._z_float32 && !x.data[i]._z_rowmajor && !graphDiv._fullLabels) {
             x.data[i].z = null;
           }
         }
