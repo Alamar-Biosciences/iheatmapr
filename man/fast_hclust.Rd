@@ -43,9 +43,15 @@ offered. Both return an `hclust` object with one leaf per row.
 * `approx = "pca"`: cluster on the first `npcs` principal components.
   Euclidean distance only.
 * `approx = "kmeans"`: reduce to `npcs` principal components, run k-means
-  with `ncenters` centers, cluster the centers, then graft each center's members back in as a zero-height
-  subtree. Members of one center stay adjacent and are not ordered among
-  themselves. Euclidean distance only.
+  with `ncenters` centers, cluster the centers, then graft each center's
+  members back in as a zero-height subtree. Members of one center stay
+  adjacent and are not ordered among themselves. With another
+  `dist_method`, k-means still groups by Euclidean distance on the
+  components, but each center is the mean of its members in the original
+  space and the centers are clustered with `dist_method`. The tree then
+  follows that metric between groups and Euclidean distance within them.
+  Ward linkage is only defined for Euclidean distance; with another metric
+  it is applied to the centers as `hclust` does for exact trees.
 
 The approximations need a matrix without NA. With fewer distinct rows than
 `ncenters`, k-means uses one center per distinct row.

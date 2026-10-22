@@ -9,6 +9,7 @@
 * `compact_hover_text()` shortens annotation bar hover text (about 2 MB at 26,400 samples) to a prefix, the main heatmap's labels, and a dictionary.
 * `options(iheatmapr.quantize_bits = 12)` stores quantized matrices in 12 bits (error range / 8190, tooltips show fewer digits); the default stays 16.
 * Adds `fast_hclust()` and the `hclust_fun` argument of `add_row_clustering()` / `add_col_clustering()`.
+* `fast_hclust(approx = "kmeans")` accepts any `stats::dist` metric: k-means groups the rows, and the group centers are clustered with the chosen metric. With Euclidean distance on PCA components only, canberra and maximum trees had no relation to the exact tree on real data.
 
 # iheatmapr 0.4.10
 

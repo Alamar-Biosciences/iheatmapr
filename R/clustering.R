@@ -222,9 +222,15 @@ setMethod(add_col_clustering,
 #' * `approx = "pca"`: cluster on the first `npcs` principal components.
 #'   Euclidean distance only.
 #' * `approx = "kmeans"`: reduce to `npcs` principal components, run k-means
-#'   with `ncenters` centers, cluster the centers, then graft each center's members back in as a zero-height
-#'   subtree. Members of one center stay adjacent and are not ordered among
-#'   themselves. Euclidean distance only.
+#'   with `ncenters` centers, cluster the centers, then graft each center's
+#'   members back in as a zero-height subtree. Members of one center stay
+#'   adjacent and are not ordered among themselves. With another
+#'   `dist_method`, k-means still groups by Euclidean distance on the
+#'   components, but each center is the mean of its members in the original
+#'   space and the centers are clustered with `dist_method`. The tree then
+#'   follows that metric between groups and Euclidean distance within them.
+#'   Ward linkage is only defined for Euclidean distance; with another metric
+#'   it is applied to the centers as `hclust` does for exact trees.
 #'
 #' The approximations need a matrix without NA. With fewer distinct rows than
 #' `ncenters`, k-means uses one center per distinct row.
@@ -250,14 +256,20 @@ fast_hclust <- function(x, method = "ward.D2", dist_method = "euclidean",
   if (approx != "none" && anyNA(x)) {
     stop("approx = \"", approx, "\" requires a matrix without NA")
   }
-  if (approx != "none" && dist_method != "euclidean") {
-    stop("approx = \"", approx, "\" requires dist_method = \"euclidean\"")
+  if (approx == "pca" && dist_method != "euclidean") {
+    stop("approx = \"pca\" requires dist_method = \"euclidean\"")
   }
+  full <- x
   if (approx != "none" && ncol(x) > npcs && nrow(x) > npcs) {
     x <- stats::prcomp(x, center = TRUE, scale. = FALSE, rank. = npcs)$x
   }
-  if (approx == "kmeans" && nrow(x) > ncenters) {
-    return(with_local_seed(seed, hclust_via_kmeans(x, method, ncenters)))
+  if (approx == "kmeans") {
+    if (nrow(x) > ncenters) {
+      return(with_local_seed(seed,
+                             hclust_via_kmeans(x, method, ncenters, dist_method, full)))
+    }
+    # Too few rows to group: the components would change a non-Euclidean metric
+    if (dist_method != "euclidean") x <- full
   }
   exact_hclust(x, method, dist_method)
 }
@@ -286,13 +298,19 @@ exact_hclust <- function(x, method, dist_method) {
   stats::hclust(stats::dist(x, method = dist_method), method = method)
 }
 
-hclust_via_kmeans <- function(x, method, ncenters) {
+hclust_via_kmeans <- function(x, method, ncenters, dist_method = "euclidean", full = x) {
   # kmeans refuses more centers than distinct rows (repeated samples)
   ncenters <- min(ncenters, nrow(unique(x)))
   km <- stats::kmeans(x, centers = ncenters, iter.max = 30, nstart = 1)
   sizes <- as.numeric(table(factor(km$cluster, levels = seq_len(ncenters))))
   keep <- which(sizes > 0)
-  d <- stats::dist(km$centers[keep, , drop = FALSE])
+  centers <- if (dist_method == "euclidean") {
+    km$centers[keep, , drop = FALSE]
+  } else {
+    # The metric must see the original values, not the k-means components
+    rowsum(full, km$cluster) / sizes[keep]
+  }
+  d <- stats::dist(centers, method = dist_method)
   if (method %in% c("ward.D", "ward.D2")) {
     # With `members`, hclust expects the Ward merge cost between clusters of
     # those sizes as the start distance, not the distance between centers
