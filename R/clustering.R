@@ -226,8 +226,8 @@ setMethod(add_col_clustering,
 #'   subtree. Members of one center stay adjacent and are not ordered among
 #'   themselves. Euclidean distance only.
 #'
-#' The approximations need a matrix without NA, and k-means needs at least
-#' `ncenters` distinct rows.
+#' The approximations need a matrix without NA. With fewer distinct rows than
+#' `ncenters`, k-means uses one center per distinct row.
 #'
 #' With `approx = "none"` and Euclidean distance, Ward, centroid or median
 #' linkage use `fastcluster::hclust.vector` (O(n) memory); other combinations
