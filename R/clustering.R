@@ -239,11 +239,13 @@ setMethod(add_col_clustering,
 #' @param approx approximation to use, see Details
 #' @param npcs number of principal components for `approx = "pca"`
 #' @param ncenters number of k-means centers for `approx = "kmeans"`
+#' @param seed seed for the k-means starts, so repeated calls give the same
+#'   tree; the caller's RNG state is restored. `NULL` leaves the RNG alone.
 #' @return an `hclust` object
 #' @export
 fast_hclust <- function(x, method = "ward.D2", dist_method = "euclidean",
                         approx = c("none", "pca", "kmeans"),
-                        npcs = 20, ncenters = 2000) {
+                        npcs = 20, ncenters = 2000, seed = 1L) {
   approx <- match.arg(approx)
   if (approx != "none" && anyNA(x)) {
     stop("approx = \"", approx, "\" requires a matrix without NA")
@@ -255,9 +257,22 @@ fast_hclust <- function(x, method = "ward.D2", dist_method = "euclidean",
     x <- stats::prcomp(x, center = TRUE, scale. = FALSE, rank. = npcs)$x
   }
   if (approx == "kmeans" && nrow(x) > ncenters) {
-    return(hclust_via_kmeans(x, method, ncenters))
+    return(with_local_seed(seed, hclust_via_kmeans(x, method, ncenters)))
   }
   exact_hclust(x, method, dist_method)
+}
+
+# k-means starts from random centers; without a fixed seed the tree, and any
+# cluster cut from it, changes on every call. The caller's RNG state is kept.
+with_local_seed <- function(seed, expr) {
+  if (is.null(seed)) return(expr)
+  had <- exists(".Random.seed", envir = globalenv(), inherits = FALSE)
+  if (had) old <- get(".Random.seed", envir = globalenv())
+  on.exit(if (had) assign(".Random.seed", old, envir = globalenv())
+          else if (exists(".Random.seed", envir = globalenv(), inherits = FALSE))
+            rm(".Random.seed", envir = globalenv()))
+  set.seed(seed)
+  expr
 }
 
 exact_hclust <- function(x, method, dist_method) {

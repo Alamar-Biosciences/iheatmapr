@@ -10,7 +10,8 @@ fast_hclust(
   dist_method = "euclidean",
   approx = c("none", "pca", "kmeans"),
   npcs = 20,
-  ncenters = 2000
+  ncenters = 2000,
+  seed = 1L
 )
 }
 \arguments{
@@ -25,6 +26,9 @@ fast_hclust(
 \item{npcs}{number of principal components for `approx = "pca"`}
 
 \item{ncenters}{number of k-means centers for `approx = "kmeans"`}
+
+\item{seed}{seed for the k-means starts, so repeated calls give the same
+tree; the caller's RNG state is restored. `NULL` leaves the RNG alone.}
 }
 \value{
 an `hclust` object

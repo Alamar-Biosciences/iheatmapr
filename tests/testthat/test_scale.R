@@ -269,3 +269,29 @@ test_that("maybe_encode_trace_binary serves a big matrix lazily only with the op
   options(iheatmapr.lazy_threshold = 1e7)
   expect_null(lazy(trace)$lazy_window)
 })
+
+test_that("fast_hclust(approx = 'kmeans') is reproducible and leaves the caller's RNG alone", {
+  set.seed(1)
+  x <- matrix(rnorm(3000 * 6), 3000, 6)
+  set.seed(42)
+  before <- runif(1)
+  set.seed(42)
+  a <- fast_hclust(x, approx = "kmeans", ncenters = 200)
+  after <- runif(1)
+  b <- fast_hclust(x, approx = "kmeans", ncenters = 200)
+  expect_equal(a$order, b$order)
+  expect_equal(a$height, b$height)
+  expect_equal(before, after)  # the seed did not disturb the caller's stream
+})
+
+test_that("fast_hclust kmeans keeps the requested linkage", {
+  set.seed(1)
+  x <- matrix(rnorm(3000 * 6), 3000, 6)
+  for (method in c("complete", "average", "ward.D2")) {
+    h <- fast_hclust(x, method = method, approx = "kmeans", ncenters = 200)
+    expect_equal(sort(h$order), 1:3000)
+    expect_false(is.unsorted(h$height))
+  }
+  expect_false(identical(fast_hclust(x, method = "complete", approx = "kmeans", ncenters = 200)$height,
+                         fast_hclust(x, method = "average", approx = "kmeans", ncenters = 200)$height))
+})
