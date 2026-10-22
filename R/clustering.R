@@ -226,6 +226,9 @@ setMethod(add_col_clustering,
 #'   subtree. Members of one center stay adjacent and are not ordered among
 #'   themselves. Euclidean distance only.
 #'
+#' The approximations need a matrix without NA, and k-means needs at least
+#' `ncenters` distinct rows.
+#'
 #' With `approx = "none"` and Euclidean distance, Ward, centroid or median
 #' linkage use `fastcluster::hclust.vector` (O(n) memory); other combinations
 #' use `stats::dist` and `hclust`.
@@ -242,6 +245,9 @@ fast_hclust <- function(x, method = "ward.D2", dist_method = "euclidean",
                         approx = c("none", "pca", "kmeans"),
                         npcs = 20, ncenters = 2000) {
   approx <- match.arg(approx)
+  if (approx != "none" && anyNA(x)) {
+    stop("approx = \"", approx, "\" requires a matrix without NA")
+  }
   if (approx != "none" && dist_method != "euclidean") {
     stop("approx = \"", approx, "\" requires dist_method = \"euclidean\"")
   }

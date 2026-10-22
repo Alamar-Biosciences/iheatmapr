@@ -64,7 +64,6 @@ Imports:
     tools,
     base64enc
 Suggests:
-    fastcluster,
     htmltools,
     datasets,
     shiny,

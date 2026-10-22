@@ -603,7 +603,7 @@ function thinLayoutLabels(graphDiv, layout) {
       var along = labelAlongKey(g);
       var ref = g[0][along === 'x' ? 'xref' : 'yref'];
       var ax = layout[axisKeyFromRef(ref)];
-      big[key] = { all: g, along: along, ref: ref, initialRange: ax && ax.range };
+      big[key] = { all: g, along: along, ref: ref, initialRange: ax && ax.range && ax.range.slice() };
     }
   });
   if (!Object.keys(big).length) return;
@@ -658,7 +658,8 @@ function rethinLabelsOnRelayout(graphDiv, d) {
   });
   if (!touched) return;  // includes the relayout this function issues itself
   update.annotations = full.others.concat(rethinned(graphDiv, graphDiv._fullLayout, d2));
-  Plotly.relayout(graphDiv, update);
+  graphDiv._selfRelayout = true;
+  Plotly.relayout(graphDiv, update).then(function() { graphDiv._selfRelayout = false; });
 }
 
 HTMLWidgets.widget({
@@ -803,6 +804,8 @@ HTMLWidgets.widget({
       // Re-attach colorbar hover handlers after plotly redraws
       graphDiv.on('plotly_relayout', function(d) {
         scheduleColorbarHandlers();
+        // Our own annotation update: not a user action, keep it out of Shiny
+        if (graphDiv._selfRelayout) return;
         rethinLabelsOnRelayout(graphDiv, d);
 
         if (shinyMode) {
@@ -868,7 +871,10 @@ HTMLWidgets.widget({
         // Plotly has already deep-copied z into _fullData/calcdata, so the
         // iheatmapr copy is no longer needed. This frees ~13-40 MB at 6500x250.
         for (var i = 0; i < x.data.length; i++) {
-          if (x.data[i]._z_float32) {
+          // Row-major z rows are views of _z_float32, so releasing them frees
+          // nothing, and a later relayout (label re-thinning) rebuilds the
+          // trace from gd.data and would blank the heatmap.
+          if (x.data[i]._z_float32 && !x.data[i]._z_rowmajor) {
             x.data[i].z = null;
           }
         }

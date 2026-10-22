@@ -13,6 +13,7 @@
   groups = NULL,
   clust_dist = stats::dist,
   clust_method = "complete",
+  hclust_fun = NULL,
   colors = NULL,
   show_colorbar = TRUE,
   side = c("left", "right"),
@@ -38,6 +39,10 @@ if hclust}
 clustering}
 
 \item{clust_method}{clustering methods passed to `hclust`}
+
+\item{hclust_fun}{optional function taking the matrix (rows = items to
+cluster) and returning an `hclust` object. Overrides `clust_dist` and
+`clust_method`; see \code{\link{fast_hclust}} for a low-memory option.}
 
 \item{colors}{colors to use for annotation of grouping, can be RColorBrewer 
 palette name or
