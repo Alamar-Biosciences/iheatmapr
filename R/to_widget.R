@@ -25,6 +25,11 @@ double_to_float32_raw <- function(x) {
 #' Encode a numeric matrix as base64 binary
 #' @param mat A numeric matrix
 #' @param use_float32 Use 32-bit floats instead of 64-bit (default TRUE, halves size)
+#' @param quantize Store values as 16-bit integers across the finite range
+#'   (default FALSE). Halves the size again; values are off by at most
+#'   range / 131070. `maybe_encode_trace_binary` turns it on above
+#'   `getOption("iheatmapr.quantize_threshold", 2e6)` cells; set the option to
+#'   `Inf` to keep full float32 precision.
 #' @param compress Use gzip compression (default FALSE). Enable for data with
 #'   compressible patterns. Note: requires browser with DecompressionStream API
 #'   (Chrome 80+, Firefox 113+, Safari 16.4+).
@@ -32,7 +37,7 @@ double_to_float32_raw <- function(x) {
 #' @keywords internal
 #' @importFrom base64enc base64encode
 encode_matrix_binary <- function(mat, use_float32 = TRUE, compress = FALSE,
-                                 row_major = TRUE) {
+                                 row_major = TRUE, quantize = FALSE) {
 
   # Validate matrix
   if (!is.matrix(mat) || nrow(mat) == 0 || ncol(mat) == 0) {
@@ -52,7 +57,24 @@ encode_matrix_binary <- function(mat, use_float32 = TRUE, compress = FALSE,
   # Row-major bytes let the browser expose each matrix row as a zero-copy view
   # of the decoded buffer instead of building a nested JS array.
   flat <- if (row_major) as.vector(t(mat_clean)) else as.vector(mat_clean)
-  if (use_float32) {
+  q_range <- NULL
+  if (quantize) {
+    # 16-bit steps across the finite range: half the bytes of float32, with an
+    # error of at most half a step (range / 131070). NA cells hold a
+    # placeholder that the browser restores from na_positions.
+    finite <- mat[is.finite(mat)]
+    lo <- if (length(finite)) min(finite) else 0
+    hi <- if (length(finite)) max(finite) else 0
+    span <- hi - lo
+    clamped <- pmin(pmax(flat, lo), hi)
+    q <- if (span > 0) round((clamped - lo) / span * 65535) else rep(0, length(flat))
+    # size = 2 keeps the low 16 bits, which is the unsigned value
+    raw_data <- writeBin(as.integer(q), raw(), size = 2, endian = "little")
+    dtype <- "uint16"
+    # Strings: the JSON writer rounds numbers to 6 decimals, which would
+    # distort the step for small ranges
+    q_range <- list(q_min = sprintf("%.17g", lo), q_max = sprintf("%.17g", hi))
+  } else if (use_float32) {
     raw_data <- double_to_float32_raw(flat)
     dtype <- "float32"
   } else {
@@ -78,6 +100,7 @@ encode_matrix_binary <- function(mat, use_float32 = TRUE, compress = FALSE,
     encoding = encoding,
     layout = if (row_major) "row-major" else "col-major"
   )
+  if (!is.null(q_range)) result <- c(result, q_range)
 
   # Include NA positions if present
   if (has_na) {
@@ -110,7 +133,8 @@ maybe_encode_trace_binary <- function(trace) {
     # Store original z matrix as binary
     trace$z_binary <- encode_matrix_binary(
       trace$z,
-      compress = length(trace$z) > getOption("iheatmapr.compress_threshold", 2e6)
+      compress = length(trace$z) > getOption("iheatmapr.compress_threshold", 2e6),
+      quantize = length(trace$z) > getOption("iheatmapr.quantize_threshold", 2e6)
     )
     # Replace z with placeholder (will be decoded in JS)
     trace$z <- NULL

@@ -65,7 +65,9 @@ function bufferToTypedArray(buffer, dtype) {
     arrayBuffer = buffer;
   }
 
-  if (dtype === 'float32') {
+  if (dtype === 'uint16') {
+    return new Uint16Array(arrayBuffer);
+  } else if (dtype === 'float32') {
     return new Float32Array(arrayBuffer);
   } else {
     return new Float64Array(arrayBuffer);
@@ -98,6 +100,17 @@ function rowViewsFromFlatArray(floatArray, nrows, ncols, naPositions) {
     rows[i] = floatArray.subarray(i * ncols, (i + 1) * ncols);
   }
   return rows;
+}
+
+// 16-bit quantized values back to floats; step is the quantization step
+function dequantize(q, binaryData) {
+  var lo = parseFloat(binaryData.q_min), hi = parseFloat(binaryData.q_max);
+  var step = (hi - lo) / 65535;
+  var out = new Float32Array(q.length);
+  for (var i = 0; i < q.length; i++) {
+    out[i] = lo + q[i] * step;
+  }
+  return { values: out, step: step };
 }
 
 function isRowMajor(binaryData) {
@@ -162,6 +175,12 @@ async function decodeBinaryMatrixAsync(binaryData) {
 
   // Convert to appropriate typed array
   var floatArray = bufferToTypedArray(decodedBytes, dtype);
+  var quantStep = 0;
+  if (dtype === 'uint16') {
+    var dq = dequantize(floatArray, binaryData);
+    floatArray = dq.values;
+    quantStep = dq.step;
+  }
 
   // Build NA position Set for O(1) lookup after z-array release
   var naSet = null;
@@ -172,7 +191,7 @@ async function decodeBinaryMatrixAsync(binaryData) {
   var matrix = buildMatrix(floatArray, binaryData);
 
   return { matrix: matrix, floatArray: floatArray, dims: [nrows, ncols], naSet: naSet,
-           rowMajor: isRowMajor(binaryData) };
+           rowMajor: isRowMajor(binaryData), quantStep: quantStep };
 }
 
 // Synchronous fallback for non-compressed data
@@ -195,6 +214,12 @@ function decodeBinaryMatrixSync(binaryData) {
 
   var rawBytes = base64ToUint8Array(binaryData.data_binary);
   var floatArray = bufferToTypedArray(rawBytes, dtype);
+  var quantStep = 0;
+  if (dtype === 'uint16') {
+    var dq = dequantize(floatArray, binaryData);
+    floatArray = dq.values;
+    quantStep = dq.step;
+  }
 
   var naSet = null;
   if (binaryData.na_positions && binaryData.na_positions.length > 0) {
@@ -204,7 +229,7 @@ function decodeBinaryMatrixSync(binaryData) {
   var matrix = buildMatrix(floatArray, binaryData);
 
   return { matrix: matrix, floatArray: floatArray, dims: [nrows, ncols], naSet: naSet,
-           rowMajor: isRowMajor(binaryData) };
+           rowMajor: isRowMajor(binaryData), quantStep: quantStep };
 }
 
 // Process traces to decode any binary-encoded matrices (async)
@@ -224,6 +249,7 @@ async function decodeBinaryTracesAsync(data) {
           t._z_dims = result.dims;
           t._z_na = result.naSet;
           t._z_rowmajor = result.rowMajor;
+          t._z_step = result.quantStep;
           delete t.z_binary;
         });
         promises.push(promise);
@@ -248,6 +274,7 @@ function decodeBinaryTraces(data) {
         trace._z_dims = result.dims;
         trace._z_na = result.naSet;
         trace._z_rowmajor = result.rowMajor;
+        trace._z_step = result.quantStep;
         delete trace.z_binary;
       }
       // If null (gzip), leave z_binary for async processing
@@ -431,7 +458,14 @@ function generateLazyTooltip(trace, rowIdx, colIdx) {
     }
     if (value !== null && value !== undefined) {
       // Format to 3 significant figures for display
-      var formatted = typeof value === 'number' ? value.toPrecision(4) : value;
+      var formatted = value;
+      if (typeof value === 'number') {
+        // Quantized values are good to about one quantization step: do not
+        // print digits finer than that
+        formatted = trace._z_step > 0
+          ? value.toFixed(Math.min(8, Math.max(0, Math.floor(-Math.log10(trace._z_step)))))
+          : value.toPrecision(4);
+      }
       parts.push(sanitizeText(lt.prepend_value) + formatted +
                  (cell.n > 1 ? ' (mean of ' + cell.n + ' cells, zoom in for exact)' : ''));
     }

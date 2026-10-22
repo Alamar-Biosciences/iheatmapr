@@ -50,3 +50,51 @@ test_that("row-major binary encoding lists NA positions in buffer order", {
   col <- encode_matrix_binary(m, row_major = FALSE)
   expect_equal(as.integer(col$na_positions), 1L)
 })
+
+decode_uint16 <- function(enc) {
+  readBin(base64enc::base64decode(enc$data_binary), "integer",
+          n = prod(enc$dims), size = 2, signed = FALSE, endian = "little")
+}
+
+test_that("quantized encoding is within half a step and keeps NA positions", {
+  set.seed(1)
+  m <- matrix(rnorm(60, sd = 5), 6, 10)
+  m[2, 3] <- NA
+  m[4, 5] <- Inf
+  enc <- encode_matrix_binary(m, quantize = TRUE)
+  expect_equal(enc$dtype, "uint16")
+  lo <- as.numeric(enc$q_min)
+  hi <- as.numeric(enc$q_max)
+  expect_equal(lo, min(m[is.finite(m)]))
+  expect_equal(hi, max(m[is.finite(m)]))
+  decoded <- lo + decode_uint16(enc) * (hi - lo) / 65535
+  truth <- as.vector(t(pmin(pmax(replace(m, is.na(m), 0), lo), hi)))
+  expect_lte(max(abs(decoded - truth)), (hi - lo) / 131070 + 1e-12)
+  expect_equal(as.integer(enc$na_positions), which(t(is.na(m))) - 1L)
+})
+
+test_that("quantization handles a constant matrix and halves the payload", {
+  enc <- encode_matrix_binary(matrix(3, 4, 5), quantize = TRUE)
+  expect_equal(as.numeric(enc$q_min), 3)
+  expect_equal(as.numeric(enc$q_max), 3)
+  expect_true(all(decode_uint16(enc) == 0))
+  m <- matrix(rnorm(20000), 100, 200)
+  expect_equal(nchar(encode_matrix_binary(m, quantize = TRUE)$data_binary) /
+                 nchar(encode_matrix_binary(m)$data_binary), 0.5, tolerance = 0.01)
+})
+
+test_that("quantize_threshold controls when traces are quantized", {
+  trace <- list(z = matrix(rnorm(200000), 400, 500))
+  local({
+    old <- options(iheatmapr.quantize_threshold = 1e5)
+    on.exit(options(old))
+    expect_equal(maybe_encode_trace_binary(trace)$z_binary$dtype, "uint16")
+  })
+  local({
+    old <- options(iheatmapr.quantize_threshold = Inf)
+    on.exit(options(old))
+    expect_equal(maybe_encode_trace_binary(trace)$z_binary$dtype, "float32")
+  })
+  # default threshold (2e6 cells): a 200k-cell trace stays float32
+  expect_equal(maybe_encode_trace_binary(trace)$z_binary$dtype, "float32")
+})
