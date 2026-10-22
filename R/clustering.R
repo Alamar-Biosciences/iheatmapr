@@ -301,6 +301,7 @@ exact_hclust <- function(x, method, dist_method) {
 hclust_via_kmeans <- function(x, method, ncenters, dist_method = "euclidean", full = x) {
   # kmeans refuses more centers than distinct rows (repeated samples)
   ncenters <- min(ncenters, nrow(unique(x)))
+  if (ncenters < 2) stop("approx = \"kmeans\" needs at least 2 distinct rows")
   km <- stats::kmeans(x, centers = ncenters, iter.max = 30, nstart = 1)
   sizes <- as.numeric(table(factor(km$cluster, levels = seq_len(ncenters))))
   keep <- which(sizes > 0)

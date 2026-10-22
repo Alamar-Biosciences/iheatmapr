@@ -319,7 +319,9 @@ test_that("approximate clustering follows a non-Euclidean metric between groups"
   # Rows repeat 12 distinct points with unequal counts, so k-means finds the
   # points exactly and any difference is the metric used on the centers
   set.seed(4)
-  pts <- abs(matrix(rnorm(12 * 6), 12, 6)) + 0.1
+  # More than npcs (20) columns, so the centers must come from the original
+  # space and not from the principal components
+  pts <- abs(matrix(rnorm(12 * 30), 12, 30)) + 0.1
   x <- pts[rep(1:12, times = c(1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233)), ]
   for (cfg in list(c("manhattan", "average"), c("maximum", "complete"),
                    c("canberra", "average"))) {
@@ -343,4 +345,9 @@ test_that("approximate clustering with a non-Euclidean metric works on few rows"
 test_that("approx = 'pca' still requires Euclidean distance", {
   x <- matrix(rnorm(100 * 5), 100, 5)
   expect_error(fast_hclust(x, dist_method = "manhattan", approx = "pca"), "euclidean")
+})
+
+test_that("approximate fast_hclust stops clearly when every row is identical", {
+  expect_error(fast_hclust(matrix(1, 2500, 5), approx = "kmeans", ncenters = 2000),
+               "at least 2 distinct rows")
 })
