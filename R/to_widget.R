@@ -197,7 +197,11 @@ lazy_session <- function() {
 lazy_window_trace <- function(trace, session, index) {
   z <- unclass(trace$z)
   f <- lod_factors(nrow(z), ncol(z))
-  name <- sprintf("%s_%d", getOption("iheatmapr.lazy_id", "iheatmapr_z"), index)
+  # One name per output: a reused name replaces the earlier matrix, so two
+  # lazy outputs sharing one would show each other's data
+  output <- tryCatch(shiny::getCurrentOutputInfo(session)$name, error = function(e) NULL)
+  id <- getOption("iheatmapr.lazy_id") %||% output %||% "iheatmapr_z"
+  name <- sprintf("%s_%d", id, index)
   url <- session$registerDataObj(name, list(m = z), lazy_window_handler)
   overview <- window_bins(z, 0, nrow(z), 0, ncol(z), f[["fr"]], f[["fc"]])
   trace$z_binary <- encode_matrix_binary(overview, quantize = TRUE)

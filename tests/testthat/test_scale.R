@@ -238,3 +238,34 @@ test_that("12-bit quantization is within half a step and 25% smaller than 16-bit
   expect_equal(r12 / r16, 0.75, tolerance = 0.01)
   expect_error(encode_matrix_binary(big, quantize = TRUE, quantize_bits = 8), "12 or 16")
 })
+
+test_that("maybe_encode_trace_binary serves a big matrix lazily only with the option, a session and sequential axes", {
+  skip_if_not_installed("shiny")
+  registered <- list()
+  session <- list(registerDataObj = function(name, data, filterFunc) {
+    registered[[name]] <<- data
+    paste0("session/tok/dataobj/", name, "?w=1&nonce=2")
+  })
+  trace <- list(z = I(matrix(rnorm(300 * 400), 300, 400)), x_implicit = 400, y_implicit = 300)
+  lazy <- function(tr, ...) shiny::withReactiveDomain(session, maybe_encode_trace_binary(tr, ...))
+
+  old <- options(iheatmapr.lazy_windows = TRUE, iheatmapr.lazy_threshold = 1e5, iheatmapr.lazy_id = "hm")
+  on.exit(options(old))
+  out <- lazy(trace, 2L)
+  expect_null(out[["z"]])  # [[ avoids $ partial matching of z_binary
+  expect_equal(out$lazy_window$dims, c(300, 400))
+  expect_equal(out$lazy_window$url, "session/tok/dataobj/hm_2?w=1&nonce=2")
+  expect_equal(names(registered), "hm_2")
+  expect_equal(dim(registered[[1]]$m), c(300, 400))
+  # the inline overview is the whole matrix at the factors the browser expects
+  f <- lod_factors(300, 400)
+  expect_equal(out$z_binary$dims, c(ceiling(300 / f[["fr"]]), ceiling(400 / f[["fc"]])))
+  # no session, option off, non-sequential axes, or below the threshold: inline
+  expect_null(maybe_encode_trace_binary(trace)$lazy_window)
+  options(iheatmapr.lazy_windows = FALSE)
+  expect_null(lazy(trace)$lazy_window)
+  options(iheatmapr.lazy_windows = TRUE)
+  expect_null(lazy(modifyList(trace, list(x_implicit = NULL)))$lazy_window)
+  options(iheatmapr.lazy_threshold = 1e7)
+  expect_null(lazy(trace)$lazy_window)
+})

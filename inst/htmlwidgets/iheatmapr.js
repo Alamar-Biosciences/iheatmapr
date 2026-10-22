@@ -477,7 +477,7 @@ function generateLazyTooltip(trace, rowIdx, colIdx) {
       if (typeof value === 'number') {
         // Quantized values are good to about one quantization step: do not
         // print digits finer than that
-        formatted = trace._z_step > 0
+        formatted = trace._z_step >= 1e-8
           ? value.toFixed(Math.min(8, Math.max(0, Math.floor(-Math.log10(trace._z_step)))))
           : value.toPrecision(4);
       }
@@ -929,6 +929,9 @@ function lodChangesFor(graphDiv, rangeOverrides) {
 // After a relayout settles: re-thin labels and refine or coarsen heatmap
 // windows in ONE Plotly.update, so the plot is redrawn once, not once per fix.
 function applyAdaptiveUpdates(graphDiv, d) {
+  // Any pass supersedes an in-flight window fetch, including one that finds
+  // nothing to do (a zoom back out must not let the zoomed-in reply land)
+  var seq = graphDiv._adaptSeq = (graphDiv._adaptSeq || 0) + 1;
   var layoutUpdate = labelsUpdateFor(graphDiv, d);
   var overrides = {};
   if (layoutUpdate) {
@@ -941,7 +944,6 @@ function applyAdaptiveUpdates(graphDiv, d) {
   if (!layoutUpdate && !changes.length) return;
 
   // Windows may need a server round trip; a newer pass supersedes this one
-  var seq = graphDiv._adaptSeq = (graphDiv._adaptSeq || 0) + 1;
   var windows = changes.map(function(c) { return lodWindow(graphDiv.data[c.idx], c.d); });
   var apply = function(rowsList) {
     if (seq !== graphDiv._adaptSeq) return;
@@ -1179,6 +1181,8 @@ HTMLWidgets.widget({
     // Function to complete rendering after all data is decoded
     function completeRender() {
       var isFirstRender = !instance.plotly;
+      // A re-render replaces the traces: replies for the old ones are stale
+      graphDiv._adaptSeq = (graphDiv._adaptSeq || 0) + 1;
 
       // The vendored bundle (2.x) still auto-converts a bare string
       // colorbar.title into {text: ...} internally, so this is a no-op
