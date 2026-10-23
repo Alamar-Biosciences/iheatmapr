@@ -1,3 +1,362 @@
+# Threshold for using binary encoding (number of cells)
+# Matrices larger than this will be encoded as base64 binary
+BINARY_ENCODING_THRESHOLD <- 100000
+
+#' Convert double vector to float32 raw bytes
+#' @param x numeric vector (NA values should be handled before calling)
+#' @return raw vector containing float32 bytes
+#' @details
+#' - Inf/-Inf values are clamped to float32 max/min (acceptable for visualization)
+#' - NaN values pass through as NaN
+#' - Uses in-memory raw connection for efficiency
+#' @keywords internal
+double_to_float32_raw <- function(x) {
+  # Clamp to float32 range to avoid overflow (Inf becomes float32 max)
+  x <- pmax(pmin(x, 3.4028235e+38), -3.4028235e+38)
+
+  # Use in-memory raw connection (faster than temp file)
+  con <- rawConnection(raw(0), "wb")
+  on.exit(close(con), add = TRUE)
+  writeBin(x, con, size = 4)
+
+  rawConnectionValue(con)
+}
+
+#' Encode a numeric matrix as base64 binary
+#' @param mat A numeric matrix
+#' @param use_float32 Use 32-bit floats instead of 64-bit (default TRUE, halves size)
+#' @param quantize Store values as integers across the finite range (default
+#'   FALSE). Halves the size again; values are off by at most half a step,
+#'   range / (2 * (2^quantize_bits - 1)). `maybe_encode_trace_binary` turns it
+#'   on above `getOption("iheatmapr.quantize_threshold", 2e6)` cells; set the
+#'   option to `Inf` to keep full float32 precision.
+#' @param quantize_bits 16 (default) or 12; 12 bits take 25% fewer bytes than 16
+#'   at 16 times the error. `getOption("iheatmapr.quantize_bits", 16)` sets it
+#'   for widgets.
+#' @param compress Use gzip compression (default FALSE). Enable for data with
+#'   compressible patterns. Note: requires browser with DecompressionStream API
+#'   (Chrome 80+, Firefox 113+, Safari 16.4+).
+#' @return A list with base64 data, dimensions, NA positions, and encoding metadata
+#' @keywords internal
+#' @importFrom base64enc base64encode
+encode_matrix_binary <- function(mat, use_float32 = TRUE, compress = FALSE,
+                                 row_major = TRUE, quantize = FALSE,
+                                 quantize_bits = 16) {
+
+  # Validate matrix
+  if (!is.matrix(mat) || nrow(mat) == 0 || ncol(mat) == 0) {
+    stop("encode_matrix_binary requires a non-empty matrix")
+  }
+
+  # Track NA positions (0-indexed for JavaScript)
+  na_mask <- is.na(mat)
+  has_na <- any(na_mask)
+
+  # Replace NA with 0 for binary encoding (will be restored in JS)
+  mat_clean <- mat
+  if (has_na) {
+    mat_clean[na_mask] <- 0
+  }
+
+  # Row-major bytes let the browser expose each matrix row as a zero-copy view
+  # of the decoded buffer instead of building a nested JS array.
+  flat <- if (row_major) as.vector(t(mat_clean)) else as.vector(mat_clean)
+  q_range <- NULL
+  if (quantize) {
+    # 16-bit steps across the finite range: half the bytes of float32, with an
+    # error of at most half a step (range / 131070). NA cells hold a
+    # placeholder that the browser restores from na_positions.
+    finite <- mat[is.finite(mat)]
+    lo <- if (length(finite)) min(finite) else 0
+    hi <- if (length(finite)) max(finite) else 0
+    span <- hi - lo
+    clamped <- pmin(pmax(flat, lo), hi)
+    levels <- 2^quantize_bits - 1
+    q <- if (span > 0) as.integer(round((clamped - lo) / span * levels)) else rep(0L, length(flat))
+    if (quantize_bits == 12) {
+      # Two 12-bit values per 3 bytes: a (low byte), a high nibble + b low
+      # nibble, b high byte. An odd count is padded with a zero.
+      if (length(q) %% 2 == 1) q <- c(q, 0L)
+      a <- q[c(TRUE, FALSE)]
+      b <- q[c(FALSE, TRUE)]
+      raw_data <- as.raw(as.vector(rbind(
+        bitwAnd(a, 255L),
+        bitwOr(bitwShiftR(a, 8L), bitwShiftL(bitwAnd(b, 15L), 4L)),
+        bitwShiftR(b, 4L)
+      )))
+      dtype <- "uint12"
+    } else if (quantize_bits == 16) {
+      # size = 2 keeps the low 16 bits, which is the unsigned value
+      raw_data <- writeBin(q, raw(), size = 2, endian = "little")
+      dtype <- "uint16"
+    } else {
+      stop("quantize_bits must be 12 or 16")
+    }
+    # Strings: the JSON writer rounds numbers to 6 decimals, which would
+    # distort the step for small ranges
+    q_range <- list(q_min = sprintf("%.17g", lo), q_max = sprintf("%.17g", hi),
+                    q_bits = quantize_bits)
+  } else if (use_float32) {
+    raw_data <- double_to_float32_raw(flat)
+    dtype <- "float32"
+  } else {
+    raw_data <- writeBin(flat, raw(), size = 8)
+    dtype <- "float64"
+  }
+
+  # Apply gzip compression if requested
+  if (compress) {
+    raw_data <- memCompress(raw_data, type = "gzip")
+    encoding <- "base64-gzip"
+  } else {
+    encoding <- "base64"
+  }
+
+  # Encode as base64
+  b64_data <- base64enc::base64encode(raw_data)
+
+  result <- list(
+    data_binary = b64_data,
+    dims = dim(mat),
+    dtype = dtype,
+    encoding = encoding,
+    layout = if (row_major) "row-major" else "col-major"
+  )
+  if (!is.null(q_range)) result <- c(result, q_range)
+
+  # Include NA positions if present
+  if (has_na) {
+    # Positions index the flat buffer in the layout chosen above
+    na_flat <- if (row_major) which(t(na_mask)) else which(na_mask)
+    result$na_positions <- I(na_flat - 1L)  # 0-indexed for JS
+  }
+
+  result
+}
+
+# Bin factors so that one drawn window holds at most `budget` cells. Must agree
+# with lodDesired() in iheatmapr.js for the full view.
+lod_factors <- function(nr, nc, budget = 4e5) {
+  fr <- 1
+  fc <- 1
+  while (ceiling(nr / fr) * ceiling(nc / fc) > budget) {
+    if (nc / fc >= nr / fr) fc <- fc * 2 else fr <- fr * 2
+  }
+  c(fr = fr, fc = fc)
+}
+
+# Mean of each fr x fc block of m[(r0 + 1):r1, (c0 + 1):c1], blocks counted
+# from the window corner; NA cells are left out of the mean and an all-NA
+# block is NaN.
+window_bins <- function(m, r0, r1, c0, c1, fr, fc) {
+  sub <- m[(r0 + 1):r1, (c0 + 1):c1, drop = FALSE]
+  if (fr == 1 && fc == 1) return(sub)
+  present <- !is.na(sub)
+  sub[!present] <- 0
+  rg <- (seq_len(nrow(sub)) - 1L) %/% fr
+  cg <- (seq_len(ncol(sub)) - 1L) %/% fc
+  agg <- function(x) t(rowsum(t(rowsum(x, rg, reorder = FALSE)), cg, reorder = FALSE))
+  agg(sub) / agg(present * 1)
+}
+
+# Serves one window of a registered matrix as row-major float32 bytes.
+# Query: r0, r1, c0, c1 (0-based, end exclusive), fr, fc (bin factors).
+lazy_window_handler <- function(data, req) {
+  bad <- function(msg) shiny::httpResponse(400L, "text/plain", msg)
+  q <- shiny::parseQueryString(req$QUERY_STRING)
+  v <- suppressWarnings(vapply(c("r0", "r1", "c0", "c1", "fr", "fc"),
+                               function(k) as.numeric(q[[k]] %||% NA), 0))
+  m <- data$m
+  if (anyNA(v) || any(v != round(v))) return(bad("window parameters must be integers"))
+  if (v[["r0"]] < 0 || v[["r1"]] <= v[["r0"]] || v[["r1"]] > nrow(m) ||
+      v[["c0"]] < 0 || v[["c1"]] <= v[["c0"]] || v[["c1"]] > ncol(m) ||
+      v[["fr"]] < 1 || v[["fc"]] < 1) {
+    return(bad("window outside the matrix"))
+  }
+  cells <- ceiling((v[["r1"]] - v[["r0"]]) / v[["fr"]]) *
+    ceiling((v[["c1"]] - v[["c0"]]) / v[["fc"]])
+  if (cells > 4e6) return(bad("window too large"))
+  bins <- window_bins(m, v[["r0"]], v[["r1"]], v[["c0"]], v[["c1"]], v[["fr"]], v[["fc"]])
+  shiny::httpResponse(200L, "application/octet-stream",
+                      double_to_float32_raw(as.vector(t(bins))),
+                      list("Cache-Control" = "no-store"))
+}
+
+# Quantizing clamps +/-Inf to the finite extrema
+anyInfinite <- function(m) any(is.infinite(m))
+
+`%||%` <- function(a, b) if (is.null(a)) b else a
+
+# The Shiny session to serve windows from, or NULL: lazy windows are opt-in
+# (options(iheatmapr.lazy_windows = TRUE)) and need a session.
+lazy_session <- function() {
+  if (!isTRUE(getOption("iheatmapr.lazy_windows", FALSE))) return(NULL)
+  if (!requireNamespace("shiny", quietly = TRUE)) return(NULL)
+  shiny::getDefaultReactiveDomain()
+}
+
+# Run `expr` with lazy windows off: exported files must carry the data, not a
+# URL into the session that built them.
+without_lazy_windows <- function(expr) {
+  old <- options(iheatmapr.lazy_windows = FALSE)
+  on.exit(options(old))
+  expr
+}
+
+# Send only a binned overview inline and let the browser fetch full-resolution
+# windows over HTTP as raw bytes, instead of embedding the whole matrix.
+lazy_window_trace <- function(trace, session, index) {
+  z <- unclass(trace$z)
+  f <- lod_factors(nrow(z), ncol(z))
+  # One name per output: a reused name replaces the earlier matrix, so two
+  # lazy outputs sharing one would show each other's data
+  output <- tryCatch(shiny::getCurrentOutputInfo(session)$name, error = function(e) NULL)
+  id <- getOption("iheatmapr.lazy_id") %||% output %||% "iheatmapr_z"
+  name <- sprintf("%s_%d", id, index)
+  url <- session$registerDataObj(name, list(m = z), lazy_window_handler)
+  overview <- window_bins(z, 0, nrow(z), 0, ncol(z), f[["fr"]], f[["fc"]])
+  # An unbinned overview is already exact, and quantizing would clamp infinities
+  binned <- f[["fr"]] > 1 || f[["fc"]] > 1
+  trace$z_binary <- encode_matrix_binary(overview, quantize = binned && !anyInfinite(overview))
+  trace$lazy_window <- list(url = url, dims = dim(z), fr = f[["fr"]], fc = f[["fc"]])
+  trace$z <- NULL
+  trace
+}
+
+#' Check if a trace should use binary encoding
+#' @param trace A plotly trace list
+#' @return TRUE if the trace has a large z matrix
+#' @keywords internal
+should_use_binary <- function(trace) {
+  if (is.null(trace$z)) return(FALSE)
+  if (!is.matrix(trace$z)) return(FALSE)
+  # Check for valid dimensions
+  if (nrow(trace$z) == 0 || ncol(trace$z) == 0) return(FALSE)
+  length(trace$z) > BINARY_ENCODING_THRESHOLD
+}
+
+#' Convert trace z matrix to binary if large enough
+#' @param trace A plotly trace list
+#' @return The trace with z optionally converted to binary
+#' @keywords internal
+maybe_encode_trace_binary <- function(trace, index = 1L) {
+  if (should_use_binary(trace)) {
+    session <- lazy_session()
+    if (!is.null(session) && !is.null(trace$x_implicit) && !is.null(trace$y_implicit) &&
+        length(trace$z) > getOption("iheatmapr.lazy_threshold", 2e6)) {
+      return(lazy_window_trace(trace, session, index))
+    }
+    # Store original z matrix as binary
+    trace$z_binary <- encode_matrix_binary(
+      trace$z,
+      compress = length(trace$z) > getOption("iheatmapr.compress_threshold", 2e6),
+      quantize = length(trace$z) > getOption("iheatmapr.quantize_threshold", 2e6) &&
+        !anyInfinite(trace$z),
+      quantize_bits = getOption("iheatmapr.quantize_bits", 16)
+    )
+    # Replace z with placeholder (will be decoded in JS)
+    trace$z <- NULL
+  }
+  trace
+}
+
+#' Compact large label annotation groups
+#'
+#' `add_row_labels()` and `add_col_labels()` emit one annotation object per
+#' label (about 120 bytes each as JSON), so 26,400 samples add 3 MB to the
+#' widget payload. This replaces each group of more than `min_group` label
+#' annotations that share every field except `text` and their position along
+#' the axis with one template plus the label vector (and the positions, when
+#' they are not 1, 2, ..., n, as after clustering); the widget's JavaScript
+#' expands them again. Only use the result with the iheatmapr widget, which understands
+#' `label_groups`; static exports need the plain annotations.
+#'
+#' @param hm_list list from [to_plotly_list()], possibly post-processed
+#' @param min_group smallest group worth compacting
+#' @return `hm_list` with `layout$annotations` shortened and `label_groups` added
+#' @export
+compact_label_annotations <- function(hm_list, min_group = 400) {
+  anns <- hm_list$layout$annotations
+  if (length(anns) <= min_group) return(hm_list)
+
+  key <- vapply(anns, function(a) {
+    if (!isFALSE(a$showarrow) || is.null(a$xref) || is.null(a$yref)) return(NA_character_)
+    paste(a$xref, a$yref, if (is.null(a$textangle)) 0 else a$textangle, sep = "|")
+  }, "")
+  keep <- rep(TRUE, length(anns))
+  groups <- list()
+  for (k in unique(key[!is.na(key)])) {
+    idx <- which(key == k)
+    if (length(idx) <= min_group) next
+    g <- anns[idx]
+    along <- if (length(unique(vapply(g, function(a) as.numeric(a$x), 0))) > 1) "x" else "y"
+    pos <- vapply(g, function(a) as.numeric(a[[along]]), 0)
+    template <- g[[1]][setdiff(names(g[[1]]), c("text", along))]
+    same <- vapply(g, function(a) identical(a[setdiff(names(a), c("text", along))], template), NA)
+    if (!all(same)) next
+    group <- list(
+      template = template, along = along,
+      text = I(vapply(g, function(a) as.character(a$text), ""))
+    )
+    if (!identical(pos, as.numeric(seq_along(g)))) group$pos <- I(pos)
+    groups[[length(groups) + 1]] <- group
+    keep[idx] <- FALSE
+  }
+  if (!length(groups)) return(hm_list)
+  hm_list$layout$annotations <- anns[keep]
+  hm_list$label_groups <- groups
+  hm_list
+}
+
+#' Compact per-cell hover text of annotation bars
+#'
+#' Covariate and cluster bars carry one hover string per sample, such as
+#' `"Sample: S00042<br>Group: G3"` (about 38 bytes each, 1 MB per bar at 26,400
+#' samples). The first part repeats the sample label that the main heatmap
+#' already ships in `lazy_tooltip`, and the second part takes few distinct
+#' values. This replaces `text` with a prefix, a reference to those labels,
+#' and a dictionary of the second parts; the widget rebuilds `text`. A trace is
+#' left alone unless its strings split exactly that way. Only use the result
+#' with the iheatmapr widget.
+#'
+#' @param hm_list list from [to_plotly_list()], possibly post-processed
+#' @param min_cells smallest bar worth compacting
+#' @return `hm_list` with `text` replaced by `hover_compact` on matching traces
+#' @export
+compact_hover_text <- function(hm_list, min_cells = 1000) {
+  custom <- hm_list$iheatmapr_custom
+  labels_for <- NULL
+  for (item in custom) {
+    lt <- item$lazy_tooltip
+    if (!is.null(lt)) { labels_for <- lt; break }
+  }
+  if (is.null(labels_for)) return(hm_list)
+
+  for (i in seq_along(hm_list$data)) {
+    tr <- hm_list$data[[i]]
+    txt <- tr$text
+    if (!is.matrix(txt) || length(txt) < min_cells || !identical(tr$hoverinfo, "text")) next
+    orient <- if (nrow(txt) == 1) "col" else if (ncol(txt) == 1) "row" else next
+    labels <- if (orient == "col") labels_for$col_labels else labels_for$row_labels
+    flat <- as.vector(txt)
+    if (length(labels) != length(flat)) next
+    cut <- regexpr("<br>", flat, fixed = TRUE)
+    if (any(cut < 1)) next
+    head <- substr(flat, 1, cut - 1L)
+    prefix <- substr(head[1], 1, nchar(head[1]) - nchar(labels[1]))
+    if (!identical(head, paste0(prefix, labels))) next
+    tail <- substr(flat, cut + 4L, nchar(flat))
+    dict <- unique(tail)
+    tr$text <- NULL
+    tr$hover_compact <- list(
+      orient = orient, prefix = prefix,
+      tails = I(dict), idx = I(match(tail, dict) - 1L)
+    )
+    hm_list$data[[i]] <- tr
+  }
+  hm_list
+}
+
 #' @name to_plotly
 #' @export
 to_plotly_list <- function(p){
@@ -7,11 +366,25 @@ to_plotly_list <- function(p){
                           yaxes = yaxes(p),
                           colorbars = p@colorbars,
                           colorbar_grid = p@colorbar_grid))
-  shapes <- unlist(unname(lapply(p@shapes,
+  all_shapes <- unname(lapply(p@shapes,
                                  make_shapes,
                                  xaxes = xaxes(p),
-                                 yaxes = yaxes(p))),
-                   recursive = FALSE, use.names = FALSE)
+                                 yaxes = yaxes(p)))
+
+  # Separate compact dendrograms from regular shapes
+  compact_dendros <- list()
+  regular_shapes <- list()
+
+  for (shape_list in all_shapes) {
+    if (!is.null(shape_list$dendro_compact)) {
+      # This is a compact dendrogram
+      compact_dendros <- c(compact_dendros, list(shape_list$dendro_compact))
+    } else if (is.list(shape_list)) {
+      # Regular shapes (list of shape objects)
+      regular_shapes <- c(regular_shapes, shape_list)
+    }
+  }
+
   annotations <- unlist(unname(lapply(p@annotations,
                                       make_annotations,
                                       xaxes = xaxes(p),
@@ -20,8 +393,8 @@ to_plotly_list <- function(p){
   layout_setting <- c(get_layout(p@xaxes),
                       get_layout(p@yaxes),
                       p@layout)
-  if (length(shapes) && !is.null(unlist(shapes))){
-    layout_setting$shapes <- shapes
+  if (length(regular_shapes) && !is.null(unlist(regular_shapes))){
+    layout_setting$shapes <- regular_shapes
   }
   if (length(annotations) && !is.null(unlist(annotations))){
     layout_setting$annotations <- annotations
@@ -30,14 +403,49 @@ to_plotly_list <- function(p){
     layout_setting$legend$x <- get_legend_position(p)
     layout_setting$legend$xanchor <- "left"
   }
+  # Apply binary encoding to large matrices
+  traces <- unname(Map(maybe_encode_trace_binary, traces, seq_along(traces)))
+
+  # Extract custom iheatmapr fields from traces to avoid Plotly validation stripping them
+  # These fields are not standard Plotly attributes and would be removed by plotly's schema
+  custom_trace_data <- list()
+  custom_fields <- c("z_binary", "x_implicit", "y_implicit", "lazy_tooltip",
+                     "lazy_window")
+
+  for (i in seq_along(traces)) {
+    trace_custom <- list()
+    for (field in custom_fields) {
+      if (!is.null(traces[[i]][[field]])) {
+        trace_custom[[field]] <- traces[[i]][[field]]
+        traces[[i]][[field]] <- NULL  # Remove from trace
+      }
+    }
+    if (length(trace_custom) > 0) {
+      custom_trace_data[[as.character(i)]] <- trace_custom
+    }
+  }
+
   out <- list(data = traces,
               layout = layout_setting,
               source = p@source,
-              config = list(modeBarButtonsToRemove = 
+              config = list(modeBarButtonsToRemove =
                               c("sendDataToCloud",
                                 "autoScale2d")))
+
+  # Add custom trace data separately (won't be validated by plotly)
+  if (length(custom_trace_data) > 0) {
+    out$iheatmapr_custom <- custom_trace_data
+  }
+
+  # Add compact dendrograms if present (decoded in JS)
+  if (length(compact_dendros) > 0) {
+    out$compact_dendrograms <- compact_dendros
+  }
+
+  # Use reduced precision (6 digits) for faster JSON serialization
+  # Binary-encoded matrices don't need high precision in JSON
   attr(out, "TOJSON_FUNC") <- function(x, ...) {
-    toJSON(x, digits = 50, auto_unbox = TRUE, force = TRUE,
+    toJSON(x, digits = 6, auto_unbox = TRUE, force = TRUE,
            null = "null", na = "null", ...)
   }
   out
@@ -61,7 +469,7 @@ to_plotly_list <- function(p){
 #' hm_json <- iheatmap(mat) %>% to_plotly_json()
 #' hm_list <- iheatmap(mat) %>% to_plotly_list()
 to_plotly_json <- function(p){
-  as_list <- to_plotly_list(p)
+  as_list <- without_lazy_windows(to_plotly_list(p))
   as_json <- attr(as_list, "TOJSON_FUNC")(as_list)
   as_json
 }
@@ -69,11 +477,14 @@ to_plotly_json <- function(p){
 plotlyDependency <- function() {
   htmltools::htmlDependency(
     name = "plotly",
-    version = "2.10.1",
+    version = "2.35.3",
     package = "iheatmapr",
     src = file.path("htmlwidgets", "lib", "plotlyjs"),
     script = "plotly-latest.min.js",
-    all_files = FALSE
+    # TRUE so LICENSE.txt / plotly.min.js.LICENSE.txt ship alongside the
+    # bundle instead of being silently dropped (all_files = FALSE only
+    # copies `script`).
+    all_files = TRUE
   )
 }
 
@@ -110,7 +521,7 @@ getPlotlySource <- function() {
 setMethod(to_widget,
           signature = c("Iheatmap"),
           function(p){
-            out <- to_plotly_list(p)
+            out <- compact_hover_text(compact_label_annotations(to_plotly_list(p)))
             createWidget(name = "iheatmapr",
                          x = out,
                          width = out$layout$width,
@@ -173,13 +584,13 @@ setMethod(save_iheatmap, c("Iheatmap","character"),
               stop("File type ", fileType, " not supported", call. = FALSE)
             }          
             if (fileType == "html"){
-              saveWidget(to_widget(p), filename, ...)
+              saveWidget(without_lazy_windows(to_widget(p)), filename, ...)
             } else{
               if (!requireNamespace("webshot",quietly = TRUE))
                 stop('Please install the webshot package for saving static plot')
               f <- basename(tempfile('iheatmapr', '.', '.html'))
               on.exit(unlink(f), add = TRUE)
-              html <- saveWidget(to_widget(p), f, selfcontained = TRUE)
+              html <- saveWidget(without_lazy_windows(to_widget(p)), f, selfcontained = TRUE)
               webshot::webshot(f, filename, ...)
             }
           })

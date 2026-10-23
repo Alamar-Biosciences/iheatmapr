@@ -18,7 +18,8 @@
   side = c("top", "bottom"),
   tooltip = setup_tooltip_options(),
   yname = NULL,
-  xname = current_xaxis(p)
+  xname = current_xaxis(p),
+  hclust_fun = NULL
 )
 }
 \arguments{
@@ -52,6 +53,10 @@ membership}
 \item{yname}{name of yaxis}
 
 \item{xname}{name of xaxis}
+
+\item{hclust_fun}{optional function taking the matrix (rows = items to
+cluster) and returning an `hclust` object. Overrides `clust_dist` and
+`clust_method`; see \code{\link{fast_hclust}} for a low-memory option.}
 }
 \value{
 \code{\link{Iheatmap-class}} object, which can be printed to generate 

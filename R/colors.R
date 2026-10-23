@@ -60,35 +60,54 @@ setMethod(colorscale, "DiscreteColorbar",
             return(out)
           })
 
+# Maximum number of color stops before switching to quantile-based sampling
+# Using 256 provides smooth color gradients while limiting computation
+MAX_COLORSCALE_STOPS <- 256
+
 setMethod(colorscale, "ContinuousColorbar",
           function(colorbar, z){
             zmax <- colorbar@zmax
             zmin <- colorbar@zmin
             zmid <- colorbar@zmid
             palette <- colorbar@colors
-            if (zmax > zmid && zmin < zmid){
-              unique_z <- stats::na.omit(unique(as.vector(z)))
+            diverging <- (zmax > zmid && zmin < zmid)
+
+            # Check number of unique values to decide approach
+            z_vec <- as.vector(z)
+            n_unique <- length(unique(stats::na.omit(z_vec)))
+
+            if (n_unique > MAX_COLORSCALE_STOPS) {
+              # Use quantile-based sampling for large datasets (faster)
+              probs <- seq(0, 1, length.out = MAX_COLORSCALE_STOPS)
+              sampled_z <- stats::quantile(z_vec, probs = probs, na.rm = TRUE)
+              vals <- scales::rescale(sampled_z, from = c(zmin, zmax))
+              vals <- pmin(pmax(vals, 0), 1)  # Clamp to [0, 1]
+              # Ensure boundary values are included for custom zmin/zmax
+              if (!any(vals == 0)) vals <- c(0, vals)
+              if (!any(vals == 1)) vals <- c(vals, 1)
+            } else {
+              # Use all unique values for small datasets (current behavior)
+              unique_z <- stats::na.omit(unique(z_vec))
               vals <- scales::rescale(unique_z, from = c(zmin, zmax))
               vals <- vals[which(vals >= 0)]
               vals <- vals[which(vals <= 1)]
               if (zmin != min(z, na.rm = TRUE)) vals <- c(vals, 0)
               if (zmax != max(z, na.rm = TRUE)) vals <- c(vals, 1)
+            }
+
+            if (diverging) {
               mid <- scales::rescale(zmid, from = c(zmin, zmax))
               vals2 <- scales::rescale_mid(vals, mid = mid)
-              o <- order(vals, decreasing = FALSE)
               cols <- scales::col_numeric(palette, domain = c(0,1))(vals2)
-              colz <- stats::setNames(data.frame(vals[o], cols[o]), NULL)
-            } else{
-              unique_z <- stats::na.omit(unique(as.vector(z)))
-              vals <- scales::rescale(unique_z, from = c(zmin, zmax))
-              vals <- vals[which(vals >= 0)]
-              vals <- vals[which(vals <= 1)]
-              if (zmin != min(z, na.rm = TRUE)) vals <- c(vals, 0)
-              if (zmax != max(z, na.rm = TRUE)) vals <- c(vals, 1)
-              o <- order(vals, decreasing = FALSE)
+            } else {
               cols <- scales::col_numeric(palette, domain = c(0,1))(vals)
-              colz <- stats::setNames(data.frame(vals[o], cols[o]), NULL)
             }
+
+            # Remove duplicates, sort, and return
+            df <- data.frame(vals = vals, cols = cols, stringsAsFactors = FALSE)
+            df <- unique(df)
+            o <- order(df$vals, decreasing = FALSE)
+            colz <- stats::setNames(df[o, ], NULL)
             return(colz)
           })
 
