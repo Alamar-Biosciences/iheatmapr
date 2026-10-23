@@ -661,6 +661,10 @@ function thinLayoutLabels(graphDiv, layout) {
     if (groups[key].length > MAX_FULL_LABELS) {
       var g = groups[key];
       var along = labelAlongKey(g);
+      // Thinning takes every stride-th label, so the group must be in axis
+      // order: label order is sample order, and a stride over it can land
+      // many picks on neighbouring cells and leave the rest of the axis bare.
+      g.sort(function(p, q) { return p[along] - q[along]; });
       var ref = g[0][along === 'x' ? 'xref' : 'yref'];
       var ax = layout[axisKeyFromRef(ref)];
       big[key] = { all: g, along: along, ref: ref, initialRange: ax && ax.range && ax.range.slice() };
@@ -673,6 +677,14 @@ function thinLayoutLabels(graphDiv, layout) {
   });
   graphDiv._fullLabels = { big: big, others: others };
   layout.annotations = others.concat(rethinned(graphDiv, layout, null));
+}
+
+function axisPxEstimate(graphDiv, layoutOrFull, axisKey) {
+  var ax = layoutOrFull && layoutOrFull[axisKey];
+  var dom = ax && ax.domain;
+  var span = dom ? Math.abs(dom[1] - dom[0]) : 1;
+  var w = (layoutOrFull && layoutOrFull.width) || graphDiv.clientWidth || 800;
+  return span * w;
 }
 
 function rethinned(graphDiv, layoutOrFull, d) {
@@ -688,9 +700,12 @@ function rethinned(graphDiv, layoutOrFull, d) {
       if (lo !== undefined && hi !== undefined) range = [Math.min(lo, hi), Math.max(lo, hi)];
     }
     var fl = graphDiv._fullLayout && graphDiv._fullLayout[axisKey];
-    var px = fl && fl._length ? fl._length : 800;
+    // Before the first draw there is no _fullLayout: estimate the axis length
+    // from its domain and the container, so the first view is not thinned to
+    // more labels than fit.
+    var px = fl && fl._length ? fl._length : axisPxEstimate(graphDiv, layoutOrFull, axisKey);
     out = out.concat(thinLabelGroup(b.all, b.along, range[0], range[1],
-                                    d ? Math.max(10, Math.floor(px / LABEL_PX)) : MAX_FULL_LABELS / 2));
+                                    Math.max(10, Math.floor(px / LABEL_PX))));
   });
   return out;
 }
