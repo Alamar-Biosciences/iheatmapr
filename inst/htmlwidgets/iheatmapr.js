@@ -51,7 +51,10 @@ async function decompressData(compressedData, format) {
 function bufferToTypedArray(buffer, dtype) {
   var arrayBuffer;
 
-  if (buffer instanceof Uint8Array) {
+  if (buffer instanceof Uint8Array && buffer.byteOffset === 0 &&
+      buffer.byteLength === buffer.buffer.byteLength) {
+    arrayBuffer = buffer.buffer;
+  } else if (buffer instanceof Uint8Array) {
     // Create a new ArrayBuffer to ensure proper byte alignment
     // This handles cases where the Uint8Array may be a slice with non-zero offset
     arrayBuffer = buffer.buffer.slice(
@@ -62,7 +65,9 @@ function bufferToTypedArray(buffer, dtype) {
     arrayBuffer = buffer;
   }
 
-  if (dtype === 'float32') {
+  if (dtype === 'uint16') {
+    return new Uint16Array(arrayBuffer);
+  } else if (dtype === 'float32') {
     return new Float32Array(arrayBuffer);
   } else {
     return new Float64Array(arrayBuffer);
@@ -82,6 +87,53 @@ function flatArrayToMatrix(floatArray, nrows, ncols) {
   return matrix;
 }
 
+// Row-major buffers need no copy: each matrix row is a view into the buffer.
+// NA cells become NaN, which Plotly treats as missing.
+function rowViewsFromFlatArray(floatArray, nrows, ncols, naPositions) {
+  if (naPositions) {
+    for (var k = 0; k < naPositions.length; k++) {
+      floatArray[naPositions[k]] = NaN;
+    }
+  }
+  var rows = new Array(nrows);
+  for (var i = 0; i < nrows; i++) {
+    rows[i] = floatArray.subarray(i * ncols, (i + 1) * ncols);
+  }
+  return rows;
+}
+
+// 16-bit quantized values back to floats; step is the quantization step
+function dequantize(q, binaryData) {
+  var lo = parseFloat(binaryData.q_min), hi = parseFloat(binaryData.q_max);
+  var step = (hi - lo) / (Math.pow(2, binaryData.q_bits || 16) - 1);
+  var out = new Float32Array(q.length);
+  for (var i = 0; i < q.length; i++) {
+    out[i] = lo + q[i] * step;
+  }
+  return { values: out, step: step };
+}
+
+// Two 12-bit values per 3 bytes (see encode_matrix_binary); count values out
+function unpack12(bytes, count) {
+  var out = new Uint16Array(count + (count % 2));
+  for (var i = 0, j = 0; j < out.length; i += 3, j += 2) {
+    out[j] = bytes[i] | ((bytes[i + 1] & 15) << 8);
+    out[j + 1] = (bytes[i + 1] >> 4) | (bytes[i + 2] << 4);
+  }
+  return count % 2 ? out.subarray(0, count) : out;
+}
+
+function isRowMajor(binaryData) {
+  return binaryData.layout === 'row-major';
+}
+
+// Index of (row, col) in the flat buffer behind trace._z_float32
+function zFlatIndex(trace, rowIdx, colIdx) {
+  var nrows = trace._z_dims[0];
+  var ncols = trace._z_dims[1];
+  return trace._z_rowmajor ? rowIdx * ncols + colIdx : colIdx * nrows + rowIdx;
+}
+
 // Restore NA values in matrix
 function restoreNAValues(matrix, naPositions, nrows) {
   if (!naPositions || naPositions.length === 0) return;
@@ -94,6 +146,17 @@ function restoreNAValues(matrix, naPositions, nrows) {
       matrix[row][col] = null;  // null is Plotly's representation of NA
     }
   }
+}
+
+function buildMatrix(floatArray, binaryData) {
+  var nrows = binaryData.dims[0];
+  var ncols = binaryData.dims[1];
+  if (isRowMajor(binaryData)) {
+    return rowViewsFromFlatArray(floatArray, nrows, ncols, binaryData.na_positions);
+  }
+  var matrix = flatArrayToMatrix(floatArray, nrows, ncols);
+  restoreNAValues(matrix, binaryData.na_positions, nrows);
+  return matrix;
 }
 
 // Decode binary-encoded matrix from trace (async for gzip support)
@@ -121,7 +184,15 @@ async function decodeBinaryMatrixAsync(binaryData) {
   }
 
   // Convert to appropriate typed array
-  var floatArray = bufferToTypedArray(decodedBytes, dtype);
+  var floatArray = dtype === 'uint12'
+    ? unpack12(decodedBytes, nrows * ncols)
+    : bufferToTypedArray(decodedBytes, dtype);
+  var quantStep = 0;
+  if (dtype === 'uint16' || dtype === 'uint12') {
+    var dq = dequantize(floatArray, binaryData);
+    floatArray = dq.values;
+    quantStep = dq.step;
+  }
 
   // Build NA position Set for O(1) lookup after z-array release
   var naSet = null;
@@ -129,13 +200,10 @@ async function decodeBinaryMatrixAsync(binaryData) {
     naSet = new Set(binaryData.na_positions);
   }
 
-  // Convert to 2D matrix
-  var matrix = flatArrayToMatrix(floatArray, nrows, ncols);
+  var matrix = buildMatrix(floatArray, binaryData);
 
-  // Restore NA values
-  restoreNAValues(matrix, binaryData.na_positions, nrows);
-
-  return { matrix: matrix, floatArray: floatArray, dims: [nrows, ncols], naSet: naSet };
+  return { matrix: matrix, floatArray: floatArray, dims: [nrows, ncols], naSet: naSet,
+           rowMajor: isRowMajor(binaryData), quantStep: quantStep };
 }
 
 // Synchronous fallback for non-compressed data
@@ -157,17 +225,25 @@ function decodeBinaryMatrixSync(binaryData) {
   var dtype = binaryData.dtype || 'float64';
 
   var rawBytes = base64ToUint8Array(binaryData.data_binary);
-  var floatArray = bufferToTypedArray(rawBytes, dtype);
+  var floatArray = dtype === 'uint12'
+    ? unpack12(rawBytes, nrows * ncols)
+    : bufferToTypedArray(rawBytes, dtype);
+  var quantStep = 0;
+  if (dtype === 'uint16' || dtype === 'uint12') {
+    var dq = dequantize(floatArray, binaryData);
+    floatArray = dq.values;
+    quantStep = dq.step;
+  }
 
   var naSet = null;
   if (binaryData.na_positions && binaryData.na_positions.length > 0) {
     naSet = new Set(binaryData.na_positions);
   }
 
-  var matrix = flatArrayToMatrix(floatArray, nrows, ncols);
-  restoreNAValues(matrix, binaryData.na_positions, nrows);
+  var matrix = buildMatrix(floatArray, binaryData);
 
-  return { matrix: matrix, floatArray: floatArray, dims: [nrows, ncols], naSet: naSet };
+  return { matrix: matrix, floatArray: floatArray, dims: [nrows, ncols], naSet: naSet,
+           rowMajor: isRowMajor(binaryData), quantStep: quantStep };
 }
 
 // Process traces to decode any binary-encoded matrices (async)
@@ -186,6 +262,8 @@ async function decodeBinaryTracesAsync(data) {
           t._z_float32 = result.floatArray;
           t._z_dims = result.dims;
           t._z_na = result.naSet;
+          t._z_rowmajor = result.rowMajor;
+          t._z_step = result.quantStep;
           delete t.z_binary;
         });
         promises.push(promise);
@@ -209,6 +287,8 @@ function decodeBinaryTraces(data) {
         trace._z_float32 = result.floatArray;
         trace._z_dims = result.dims;
         trace._z_na = result.naSet;
+        trace._z_rowmajor = result.rowMajor;
+        trace._z_step = result.quantStep;
         delete trace.z_binary;
       }
       // If null (gzip), leave z_binary for async processing
@@ -234,6 +314,7 @@ function expandImplicitCoordinates(data) {
     var trace = data[i];
 
     if (trace.x_implicit !== undefined) {
+      trace._x_seq = true;
       var n = trace.x_implicit;
       trace.x = [];
       for (var j = 1; j <= n; j++) {
@@ -243,6 +324,7 @@ function expandImplicitCoordinates(data) {
     }
 
     if (trace.y_implicit !== undefined) {
+      trace._y_seq = true;
       var m = trace.y_implicit;
       trace.y = [];
       for (var k = 1; k <= m; k++) {
@@ -254,47 +336,51 @@ function expandImplicitCoordinates(data) {
   return data;
 }
 
-// Decode compact dendrogram binary data into Plotly shapes (async for zlib support)
-async function decodeCompactDendrograms(compactDendros, existingShapes) {
-  if (!compactDendros || compactDendros.length === 0) {
-    return existingShapes || [];
-  }
-
-  var shapes = existingShapes ? existingShapes.slice() : [];
+// Decode compact dendrogram binary data into one line trace per dendrogram.
+// Plotly still draws one path per segment, but a trace avoids the extra shape
+// DOM nodes and layout objects that one layout shape per segment costs.
+async function decodeCompactDendrograms(compactDendros) {
+  var traces = [];
+  if (!compactDendros) return traces;
 
   for (var i = 0; i < compactDendros.length; i++) {
     var dendro = compactDendros[i];
     if (!dendro.coords_binary || !dendro.n_segments) continue;
 
-    // Decode binary coordinates
     var rawBytes = base64ToUint8Array(dendro.coords_binary);
-
-    // Decompress if zlib encoded
     if (dendro.encoding === 'base64-zlib') {
       rawBytes = await decompressData(rawBytes, 'zlib');
     }
 
-    var dtype = dendro.dtype || 'float32';
-    var floatArray = bufferToTypedArray(rawBytes, dtype);
+    var floatArray = bufferToTypedArray(rawBytes, dendro.dtype || 'float32');
 
     // Each segment has 4 coordinates: x0, x1, y0, y1
     var n = dendro.n_segments;
+    var xs = new Array(n * 3);
+    var ys = new Array(n * 3);
     for (var j = 0; j < n; j++) {
       var offset = j * 4;
-      shapes.push({
-        x0: floatArray[offset],
-        x1: floatArray[offset + 1],
-        y0: floatArray[offset + 2],
-        y1: floatArray[offset + 3],
-        type: 'line',
-        xref: dendro.xref,
-        yref: dendro.yref,
-        line: { color: dendro.color || 'gray' }
-      });
+      xs[j * 3] = floatArray[offset];
+      xs[j * 3 + 1] = floatArray[offset + 1];
+      xs[j * 3 + 2] = null;
+      ys[j * 3] = floatArray[offset + 2];
+      ys[j * 3 + 1] = floatArray[offset + 3];
+      ys[j * 3 + 2] = null;
     }
+    traces.push({
+      type: 'scatter',
+      mode: 'lines',
+      x: xs,
+      y: ys,
+      xaxis: dendro.xref,
+      yaxis: dendro.yref,
+      line: { color: dendro.color || 'gray', width: 1 },
+      hoverinfo: 'skip',
+      showlegend: false
+    });
   }
 
-  return shapes;
+  return traces;
 }
 
 // Sanitize text for safe HTML display (prevent XSS)
@@ -317,6 +403,11 @@ function generateLazyTooltip(trace, rowIdx, colIdx) {
       rowIdx < 0 || colIdx < 0) {
     return null;
   }
+
+  var cell = lodCell(trace, rowIdx, colIdx);
+  var shownRow = rowIdx, shownCol = colIdx;
+  rowIdx = cell.row;
+  colIdx = cell.col;
 
   var parts = [];
 
@@ -357,12 +448,16 @@ function generateLazyTooltip(trace, rowIdx, colIdx) {
   // was released after Plotly consumed it (Optimization 2).
   if (lt.show_value) {
     var value;
-    if (trace._z_float32 && trace._z_dims) {
+    if (cell.n > 1 || trace._lazy) {
+      // Binned overview cell: show the mean the heatmap is drawn with; lazy
+      // traces have no full buffer, only the displayed (exact when zoomed) cells
+      value = trace.z && trace.z[shownRow] ? trace.z[shownRow][shownCol] : undefined;
+    } else if (trace._z_float32 && trace._z_dims) {
       // Column-major layout from R: flatIdx = col * nrows + row
       var nrows = trace._z_dims[0];
       var ncols = trace._z_dims[1];
       if (rowIdx >= 0 && rowIdx < nrows && colIdx >= 0 && colIdx < ncols) {
-        var flatIdx = colIdx * nrows + rowIdx;
+        var flatIdx = zFlatIndex(trace, rowIdx, colIdx);
         if (trace._z_na && trace._z_na.has(flatIdx)) {
           value = null;
         } else {
@@ -376,10 +471,18 @@ function generateLazyTooltip(trace, rowIdx, colIdx) {
       // Fallback for non-binary traces
       value = trace.z[rowIdx][colIdx];
     }
-    if (value !== null && value !== undefined) {
+    if (value !== null && value !== undefined && value === value) {
       // Format to 3 significant figures for display
-      var formatted = typeof value === 'number' ? value.toPrecision(4) : value;
-      parts.push(sanitizeText(lt.prepend_value) + formatted);
+      var formatted = value;
+      if (typeof value === 'number') {
+        // Quantized values are good to about one quantization step: do not
+        // print digits finer than that
+        formatted = trace._z_step >= 1e-8
+          ? value.toFixed(Math.min(8, Math.max(0, Math.floor(-Math.log10(trace._z_step)))))
+          : value.toPrecision(4);
+      }
+      parts.push(sanitizeText(lt.prepend_value) + formatted +
+                 (cell.n > 1 ? ' (mean of ' + cell.n + ' cells, zoom in for exact)' : ''));
     }
   }
 
@@ -510,6 +613,446 @@ function setupLazyTooltipHandlers(graphDiv, data) {
   };
 }
 
+// add_row_labels / add_col_labels emit one layout annotation (one SVG text node
+// plus layout work) per label. At tens of thousands of samples that exhausts
+// renderer memory, so label groups larger than this are thinned to what fits the
+// visible range and re-thinned on zoom.
+var MAX_FULL_LABELS = 400;
+var LABEL_PX = 14;
+
+function axisKeyFromRef(ref) {
+  return ref.charAt(0) + 'axis' + ref.slice(1);
+}
+
+// The coordinate that varies within a label group is the one along its axis
+function labelAlongKey(group) {
+  var a = group[0], b = group[1];
+  return a.x !== b.x ? 'x' : 'y';
+}
+
+function thinLabelGroup(group, along, lo, hi, maxLabels) {
+  var inRange = group.filter(function(a) { return a[along] >= lo && a[along] <= hi; });
+  var stride = Math.max(1, Math.ceil(inRange.length / maxLabels));
+  if (stride === 1) return inRange;
+  return inRange.filter(function(a, k) { return k % stride === 0; });
+}
+
+function visibleRange(layoutOrFull, axisKey) {
+  var ax = layoutOrFull && layoutOrFull[axisKey];
+  var r = ax && ax.range;
+  return r ? [Math.min(r[0], r[1]), Math.max(r[0], r[1])] : [-Infinity, Infinity];
+}
+
+// Called before the first render: replaces oversized label groups in the layout
+function thinLayoutLabels(graphDiv, layout) {
+  graphDiv._fullLabels = null;
+  var anns = layout.annotations;
+  if (!Array.isArray(anns) || anns.length <= MAX_FULL_LABELS) return;
+
+  var groups = {};
+  anns.forEach(function(a) {
+    if (a.showarrow !== false || !a.xref || !a.yref) return;
+    var key = a.xref + '|' + a.yref + '|' + (a.textangle || 0);
+    (groups[key] = groups[key] || []).push(a);
+  });
+
+  var big = {};
+  Object.keys(groups).forEach(function(key) {
+    if (groups[key].length > MAX_FULL_LABELS) {
+      var g = groups[key];
+      var along = labelAlongKey(g);
+      // Thinning takes every stride-th label, so the group must be in axis
+      // order: label order is sample order, and a stride over it can land
+      // many picks on neighbouring cells and leave the rest of the axis bare.
+      g.sort(function(p, q) { return p[along] - q[along]; });
+      var ref = g[0][along === 'x' ? 'xref' : 'yref'];
+      var ax = layout[axisKeyFromRef(ref)];
+      big[key] = { all: g, along: along, ref: ref, initialRange: ax && ax.range && ax.range.slice() };
+    }
+  });
+  if (!Object.keys(big).length) return;
+
+  var others = anns.filter(function(a) {
+    return !big[a.xref + '|' + a.yref + '|' + (a.textangle || 0)];
+  });
+  graphDiv._fullLabels = { big: big, others: others };
+  layout.annotations = others.concat(rethinned(graphDiv, layout, null));
+}
+
+function axisPxEstimate(graphDiv, layoutOrFull, axisKey) {
+  var ax = layoutOrFull && layoutOrFull[axisKey];
+  var dom = ax && ax.domain;
+  var span = dom ? Math.abs(dom[1] - dom[0]) : 1;
+  var isY = /^y/.test(axisKey);
+  var size = isY
+    ? (layoutOrFull && layoutOrFull.height) || graphDiv.clientHeight || 800
+    : (layoutOrFull && layoutOrFull.width) || graphDiv.clientWidth || 800;
+  return span * size;
+}
+
+function rethinned(graphDiv, layoutOrFull, d) {
+  var out = [];
+  var big = graphDiv._fullLabels.big;
+  Object.keys(big).forEach(function(key) {
+    var b = big[key];
+    var axisKey = axisKeyFromRef(b.ref);
+    var range = visibleRange(layoutOrFull, axisKey);
+    if (d) {
+      var lo = d[axisKey + '.range[0]'], hi = d[axisKey + '.range[1]'];
+      if (d[axisKey + '.range'] !== undefined) { lo = d[axisKey + '.range'][0]; hi = d[axisKey + '.range'][1]; }
+      if (lo !== undefined && hi !== undefined) range = [Math.min(lo, hi), Math.max(lo, hi)];
+    }
+    var fl = graphDiv._fullLayout && graphDiv._fullLayout[axisKey];
+    // Before the first draw there is no _fullLayout: estimate the axis length
+    // from its domain and the container, so the first view is not thinned to
+    // more labels than fit.
+    var px = fl && fl._length ? fl._length : axisPxEstimate(graphDiv, layoutOrFull, axisKey);
+    out = out.concat(thinLabelGroup(b.all, b.along, range[0], range[1],
+                                    Math.max(10, Math.floor(px / LABEL_PX))));
+  });
+  return out;
+}
+
+// Layout update that re-thins labels after an axis range change, or null.
+// Plotly's autorange also looks at annotations, so with thinned labels it would
+// fit only the visible ones; reset to the layout's original range instead.
+function labelsUpdateFor(graphDiv, d) {
+  var full = graphDiv._fullLabels;
+  var lodRanges = graphDiv._lodRanges || {};
+  if (!d || (!full && !Object.keys(lodRanges).length)) return null;
+  var update = {};
+  var d2 = Object.assign({}, d);
+  var touched = false;
+  Object.keys(lodRanges).forEach(function(axisKey) {
+    if (d[axisKey + '.autorange']) {
+      d2[axisKey + '.range'] = lodRanges[axisKey];
+      update[axisKey + '.range'] = lodRanges[axisKey].slice();
+      update[axisKey + '.autorange'] = false;
+      touched = true;
+    }
+  });
+  if (full) Object.keys(full.big).forEach(function(key) {
+    var b = full.big[key];
+    var axisKey = axisKeyFromRef(b.ref);
+    if (d[axisKey + '.autorange'] && b.initialRange) {
+      d2[axisKey + '.range'] = b.initialRange;
+      update[axisKey + '.range'] = b.initialRange.slice();
+      update[axisKey + '.autorange'] = false;
+      touched = true;
+    } else if (d[axisKey + '.range[0]'] !== undefined || d[axisKey + '.range'] !== undefined) {
+      touched = true;
+    }
+  });
+  // A resize changes the axis length, and with it how many labels fit
+  if (full && (d.width !== undefined || d.height !== undefined)) touched = true;
+  if (!touched) return null;
+  if (full) update.annotations = full.others.concat(rethinned(graphDiv, graphDiv._fullLayout, d2));
+  return update;
+}
+
+// compact_label_annotations() ships big label groups as one template plus the
+// label text; expand them into annotations before thinning
+function expandLabelGroups(x) {
+  if (!x.label_groups || !x.label_groups.length) return;
+  var anns = x.layout.annotations || [];
+  x.label_groups.forEach(function(g) {
+    for (var k = 0; k < g.text.length; k++) {
+      var a = Object.assign({}, g.template);
+      a[g.along] = g.pos ? g.pos[k] : k + 1;
+      a.text = g.text[k];
+      anns.push(a);
+    }
+  });
+  x.layout.annotations = anns;
+  delete x.label_groups;
+}
+
+// compact_hover_text() replaces an annotation bar's per-cell text with a
+// prefix, a reference to the main heatmap's labels, and a dictionary
+function expandHoverText(data) {
+  var main = null;
+  data.forEach(function(t) { if (!main && t.lazy_tooltip) main = t.lazy_tooltip; });
+  data.forEach(function(t) {
+    var h = t.hover_compact;
+    if (!h) return;
+    var labels = h.orient === 'col' ? main && main.col_labels : main && main.row_labels;
+    if (!labels || labels.length !== h.idx.length) {
+      delete t.hover_compact;
+      return;
+    }
+    var cells = new Array(labels.length);
+    for (var i = 0; i < labels.length; i++) {
+      cells[i] = h.prefix + labels[i] + '<br>' + h.tails[h.idx[i]];
+    }
+    t.text = h.orient === 'col' ? [cells] : cells.map(function(c) { return [c]; });
+    delete t.hover_compact;
+  });
+}
+
+// ---- Level of detail --------------------------------------------------------
+// Plotly redraws every cell of a heatmap trace on each relayout, which costs
+// seconds at millions of cells. Large row-major heatmaps are therefore drawn
+// as a binned overview when zoomed out and as the visible full-resolution
+// window (zero-copy row views) when zoomed in, so a redraw never exceeds
+// LOD_BUDGET_CELLS. The full Float32Array stays on the trace for tooltips.
+var LOD_MIN_CELLS = 500000;
+var LOD_BUDGET_CELLS = 400000;
+
+function lodEligible(trace) {
+  if (trace._lazy) return !!(trace._x_seq && trace._y_seq);
+  return !!(trace._z_float32 && trace._z_rowmajor && trace._z_dims &&
+            trace._x_seq && trace._y_seq &&
+            trace._z_dims[0] * trace._z_dims[1] >= LOD_MIN_CELLS);
+}
+
+function lodAxisRange(axObj) {
+  var r = axObj && axObj.range;
+  return r ? [Math.min(r[0], r[1]), Math.max(r[0], r[1])] : null;
+}
+
+// Window and bin factors for the visible ranges (1-based axis coordinates),
+// or null when no cell is visible
+function lodDesired(trace, xr, yr) {
+  var nr = trace._z_dims[0], nc = trace._z_dims[1];
+  function span(range, n) {
+    var lo = range ? Math.min(n, Math.max(0, Math.floor(range[0] - 0.5))) : 0;
+    var hi = range ? Math.max(0, Math.min(n, Math.ceil(range[1] - 0.5))) : n;
+    if (hi <= lo) return null;  // panned entirely off the matrix
+    var margin = Math.ceil((hi - lo) * 0.25);
+    return { lo: lo, hi: hi, start: Math.max(0, lo - margin), end: Math.min(n, hi + margin) };
+  }
+  var cs = span(xr, nc), rs = span(yr, nr);
+  if (!cs || !rs) return null;
+  var fc = 1, fr = 1;
+  while (Math.ceil((rs.end - rs.start) / fr) * Math.ceil((cs.end - cs.start) / fc) > LOD_BUDGET_CELLS) {
+    if ((cs.end - cs.start) / fc >= (rs.end - rs.start) / fr) fc *= 2; else fr *= 2;
+  }
+  // Align the window to bin boundaries so panning does not shift bins
+  var c0 = Math.floor(cs.start / fc) * fc, r0 = Math.floor(rs.start / fr) * fr;
+  return { r0: r0, r1: rs.end, c0: c0, c1: cs.end, fr: fr, fc: fc,
+           visR0: rs.lo, visR1: rs.hi, visC0: cs.lo, visC1: cs.hi };
+}
+
+function lodBuild(trace, d) {
+  var ncols = trace._z_dims[1], buf = trace._z_float32;
+  var nr = Math.ceil((d.r1 - d.r0) / d.fr), nc = Math.ceil((d.c1 - d.c0) / d.fc);
+  var rows = new Array(nr);
+  if (d.fr === 1 && d.fc === 1) {
+    for (var i = 0; i < nr; i++) {
+      rows[i] = buf.subarray((d.r0 + i) * ncols + d.c0, (d.r0 + i) * ncols + d.c1);
+    }
+    return rows;
+  }
+  var store = new Float32Array(nr * nc);
+  for (var i2 = 0; i2 < nr; i2++) {
+    var out = store.subarray(i2 * nc, (i2 + 1) * nc);
+    var rs = d.r0 + i2 * d.fr, re = Math.min(d.r1, rs + d.fr);
+    for (var j = 0; j < nc; j++) {
+      var cs = d.c0 + j * d.fc, ce = Math.min(d.c1, cs + d.fc), sum = 0, cnt = 0;
+      for (var r = rs; r < re; r++) {
+        var base = r * ncols;
+        for (var c = cs; c < ce; c++) {
+          var v = buf[base + c];
+          if (v === v) { sum += v; cnt++; }
+        }
+      }
+      out[j] = cnt ? sum / cnt : NaN;
+    }
+    rows[i2] = out;
+  }
+  return rows;
+}
+
+// Plotly's autorange fits only the drawn window, so remember each LOD axis's
+// full range to restore on autorange (reset axes, double click)
+function rememberLodRange(graphDiv, layout, trace) {
+  [['x', 1], ['y', 0]].forEach(function(a) {
+    var key = axisKeyFromRef(trace[a[0] + 'axis'] || a[0]);
+    if (graphDiv._lodRanges[key]) return;
+    var ax = layout[key] || {};
+    var n = trace._z_dims[a[1]];
+    var r = ax.range ? ax.range.slice() : [0.5, n + 0.5];
+    if (!ax.range && ax.autorange === 'reversed') r.reverse();
+    graphDiv._lodRanges[key] = r;
+  });
+}
+
+function lodTraceProps(d) {
+  return { x0: d.c0 + (d.fc + 1) / 2, dx: d.fc, y0: d.r0 + (d.fr + 1) / 2, dy: d.fr };
+}
+
+// Before the first render: swap eligible traces to their overview
+function lodInit(data, layout, graphDiv) {
+  graphDiv._lodRanges = {};
+  data.forEach(function(trace) {
+    trace._lod = null;
+    if (!lodEligible(trace)) return;
+    rememberLodRange(graphDiv, layout, trace);
+    if (trace._lazy) {
+      // The inline overview is the whole matrix at the factors R chose
+      var ov = trace._lazy.ov, nr = trace._z_dims[0], nc = trace._z_dims[1];
+      var d0 = { r0: 0, r1: nr, c0: 0, c1: nc, fr: ov.fr, fc: ov.fc,
+                 visR0: 0, visR1: nr, visC0: 0, visC1: nc };
+      trace.z = ov.rows;
+      delete trace.x;
+      delete trace.y;
+      Object.assign(trace, lodTraceProps(d0));
+      trace._lod = d0;
+      return;
+    }
+    var xr = lodAxisRange(layout[axisKeyFromRef(trace.xaxis || 'x')]);
+    var yr = lodAxisRange(layout[axisKeyFromRef(trace.yaxis || 'y')]);
+    var d = lodDesired(trace, xr, yr) || lodDesired(trace, null, null);
+    trace.z = lodBuild(trace, d);
+    delete trace.x;
+    delete trace.y;
+    Object.assign(trace, lodTraceProps(d));
+    trace._lod = d;
+  });
+}
+
+// Traces sent with an inline overview only: the full matrix stays on the
+// server and windows are fetched as raw float32 bytes (see lazy_window_trace)
+function lazyInit(data) {
+  data.forEach(function(trace) {
+    var lw = trace.lazy_window;
+    if (!lw) return;
+    trace._z_dims = lw.dims;
+    trace._lazy = { url: lw.url, ov: { rows: trace.z, fr: lw.fr, fc: lw.fc } };
+    // Windows are exact and the overview is labelled as a mean, so the
+    // quantization step must not shorten tooltip digits
+    trace._z_step = 0;
+    delete trace._z_float32;
+    delete trace._z_na;
+    delete trace.lazy_window;
+  });
+}
+
+// Rows for window d: the cached overview, a local slice, or a server fetch
+// (a Promise). Cells come back as float32, NaN where there is no value.
+function lodWindow(trace, d) {
+  var lz = trace._lazy;
+  if (!lz) return lodBuild(trace, d);
+  var nr = trace._z_dims[0], nc = trace._z_dims[1];
+  if (d.r0 === 0 && d.c0 === 0 && d.r1 === nr && d.c1 === nc &&
+      d.fr === lz.ov.fr && d.fc === lz.ov.fc) {
+    return lz.ov.rows;
+  }
+  var nrows = Math.ceil((d.r1 - d.r0) / d.fr), ncols = Math.ceil((d.c1 - d.c0) / d.fc);
+  var url = lz.url + '&r0=' + d.r0 + '&r1=' + d.r1 + '&c0=' + d.c0 + '&c1=' + d.c1 +
+            '&fr=' + d.fr + '&fc=' + d.fc;
+  return fetch(url, { cache: 'no-store' }).then(function(resp) {
+    if (!resp.ok) throw new Error('heatmap window request failed: ' + resp.status);
+    return resp.arrayBuffer();
+  }).then(function(buf) {
+    var f = new Float32Array(buf);
+    if (f.length !== nrows * ncols) throw new Error('heatmap window has the wrong size');
+    var rows = new Array(nrows);
+    for (var i = 0; i < nrows; i++) rows[i] = f.subarray(i * ncols, (i + 1) * ncols);
+    return rows;
+  });
+}
+
+// Trace updates for windows that no longer fit the visible ranges.
+// `rangeOverrides` maps an axis key to a range about to be applied.
+function lodChangesFor(graphDiv, rangeOverrides) {
+  var changes = [];
+  var data = graphDiv.data;
+  if (!data || !graphDiv._fullLayout) return changes;
+  data.forEach(function(trace, idx) {
+    if (!trace._lod) return;
+    var xKey = axisKeyFromRef(trace.xaxis || 'x'), yKey = axisKeyFromRef(trace.yaxis || 'y');
+    var xr = rangeOverrides[xKey] || lodAxisRange(graphDiv._fullLayout[xKey]);
+    var yr = rangeOverrides[yKey] || lodAxisRange(graphDiv._fullLayout[yKey]);
+    var d = lodDesired(trace, xr && [Math.min(xr[0], xr[1]), Math.max(xr[0], xr[1])],
+                       yr && [Math.min(yr[0], yr[1]), Math.max(yr[0], yr[1])]);
+    if (!d) return;
+    var st = trace._lod;
+    var covers = st.r0 <= d.visR0 && st.r1 >= d.visR1 && st.c0 <= d.visC0 && st.c1 >= d.visC1;
+    if (covers && st.fr <= d.fr && st.fc <= d.fc) return;
+    changes.push({ idx: idx, d: d });
+  });
+  return changes;
+}
+
+// After a relayout settles: re-thin labels and refine or coarsen heatmap
+// windows in ONE Plotly.update, so the plot is redrawn once, not once per fix.
+function applyAdaptiveUpdates(graphDiv, d) {
+  // Any pass supersedes an in-flight window fetch, including one that finds
+  // nothing to do (a zoom back out must not let the zoomed-in reply land)
+  var seq = graphDiv._adaptSeq = (graphDiv._adaptSeq || 0) + 1;
+  var layoutUpdate = labelsUpdateFor(graphDiv, d);
+  var overrides = {};
+  if (layoutUpdate) {
+    Object.keys(layoutUpdate).forEach(function(k) {
+      var m = /^([xy]axis\d*)\.range$/.exec(k);
+      if (m) overrides[m[1]] = layoutUpdate[k];
+    });
+  }
+  var wanted = lodChangesFor(graphDiv, overrides);
+  if (!layoutUpdate && !wanted.length) return;
+
+  // Windows may need a server round trip; a newer pass supersedes this one
+  var windows = wanted.map(function(c) { return lodWindow(graphDiv.data[c.idx], c.d); });
+  var apply = function(rowsList, changes) {
+    if (seq !== graphDiv._adaptSeq) return;
+    var dataUpdate = { z: [], x0: [], dx: [], y0: [], dy: [] };
+    var indices = [];
+    if (rowsList) {
+      changes.forEach(function(c, k) {
+        var trace = graphDiv.data[c.idx], props = lodTraceProps(c.d);
+        trace._lod = c.d;
+        dataUpdate.z.push(rowsList[k]);
+        dataUpdate.x0.push(props.x0);
+        dataUpdate.dx.push(props.dx);
+        dataUpdate.y0.push(props.y0);
+        dataUpdate.dy.push(props.dy);
+        indices.push(c.idx);
+      });
+    }
+    if (!layoutUpdate && !indices.length) return;
+    graphDiv._selfRelayout = true;
+    var done = function() { graphDiv._selfRelayout = false; };
+    Plotly.update(graphDiv, indices.length ? dataUpdate : {}, layoutUpdate || {},
+                  indices.length ? indices : undefined).then(done, done);
+  };
+  Promise.all(windows).then(function(rowsList) { apply(rowsList, wanted); }, function(err) {
+    console.warn('iheatmapr: window fetch failed, drawing the overview.', err);
+    // The labels follow the new view, so the cells must too: the cached
+    // overview covers the whole matrix, the old window may not cover this view
+    var fb = wanted.map(function(c, k) {
+      var tr = graphDiv.data[c.idx];
+      if (!tr._lazy) return { c: c, rows: windows[k] };
+      var nr = tr._z_dims[0], nc = tr._z_dims[1], ov = tr._lazy.ov;
+      return { c: { idx: c.idx, d: { r0: 0, r1: nr, c0: 0, c1: nc, fr: ov.fr, fc: ov.fc,
+                                     visR0: 0, visR1: nr, visC0: 0, visC1: nc } },
+               rows: ov.rows };
+    });
+    apply(fb.map(function(f) { return f.rows; }), fb.map(function(f) { return f.c; }));
+  });
+}
+
+function scheduleAdaptiveUpdate(graphDiv, d) {
+  // A reply for the previous view must not land while this change is debounced
+  graphDiv._adaptSeq = (graphDiv._adaptSeq || 0) + 1;
+  graphDiv._pendingRelayout = Object.assign(graphDiv._pendingRelayout || {}, d);
+  if (graphDiv._adaptiveTimeout) clearTimeout(graphDiv._adaptiveTimeout);
+  graphDiv._adaptiveTimeout = setTimeout(function() {
+    var pending = graphDiv._pendingRelayout;
+    graphDiv._adaptiveTimeout = null;
+    graphDiv._pendingRelayout = null;
+    applyAdaptiveUpdates(graphDiv, pending);
+  }, 50);
+}
+
+// Map a displayed cell to the full matrix; binned cells report their first
+// row/column and the number of cells they average
+function lodCell(trace, rowIdx, colIdx) {
+  var st = trace._lod;
+  if (!st) return { row: rowIdx, col: colIdx, n: 1 };
+  return { row: st.r0 + rowIdx * st.fr, col: st.c0 + colIdx * st.fc, n: st.fr * st.fc };
+}
+
 HTMLWidgets.widget({
   name: "iheatmapr",
   type: "output",
@@ -567,6 +1110,9 @@ HTMLWidgets.widget({
 
     // Expand implicit coordinates (x_implicit/y_implicit -> full arrays)
     expandImplicitCoordinates(x.data);
+    expandHoverText(x.data);
+    expandLabelGroups(x);
+    thinLayoutLabels(graphDiv, x.layout);
 
     // Store current data and source on instance so event handlers always
     // reference latest values (not stale closures from first renderValue call)
@@ -589,6 +1135,14 @@ HTMLWidgets.widget({
           // Use instance.currentData (not closed-over x.data) so that
           // subsequent Plotly.react() re-renders update the data correctly
           var tr = instance.currentData[pt.curveNumber];
+          // Binned cells report their first source cell, as the tooltip does
+          if (tr._lod && Array.isArray(pt.pointNumber)) {
+            var src = lodCell(tr, pt.pointNumber[0], pt.pointNumber[1]);
+            obj.x = src.col + 1;
+            obj.y = src.row + 1;
+            // z is the bin mean, not the value of the cell at (x, y)
+            if (src.n > 1) obj.bin = { rows: tr._lod.fr, cols: tr._lod.fc };
+          }
           // add on additional trace info, if it exists
           var attachKey = function(keyName) {
             if (tr.hasOwnProperty(keyName) && tr[keyName] !== null) {
@@ -601,13 +1155,16 @@ HTMLWidgets.widget({
           };
           // For z: prefer Float32Array backing if the 2D z-array was released
           if (tr._z_float32 && tr._z_dims && Array.isArray(pt.pointNumber)) {
-            var rowIdx = pt.pointNumber[0];
-            var colIdx = pt.pointNumber[1];
+            var cell = lodCell(tr, pt.pointNumber[0], pt.pointNumber[1]);
+            var rowIdx = cell.row;
+            var colIdx = cell.col;
             var zNrows = tr._z_dims[0];
             var zNcols = tr._z_dims[1];
             if (rowIdx >= 0 && rowIdx < zNrows && colIdx >= 0 && colIdx < zNcols) {
-              var flatIdx = colIdx * zNrows + rowIdx;
-              if (tr._z_na && tr._z_na.has(flatIdx)) {
+              var flatIdx = zFlatIndex(tr, rowIdx, colIdx);
+              if (cell.n > 1) {
+                obj.z = tr.z[pt.pointNumber[0]][pt.pointNumber[1]];
+              } else if (tr._z_na && tr._z_na.has(flatIdx)) {
                 obj.z = null;
               } else {
                 obj.z = tr._z_float32[flatIdx];
@@ -651,6 +1208,9 @@ HTMLWidgets.widget({
       // Re-attach colorbar hover handlers after plotly redraws
       graphDiv.on('plotly_relayout', function(d) {
         scheduleColorbarHandlers();
+        // Our own annotation update: not a user action, keep it out of Shiny
+        if (graphDiv._selfRelayout) return;
+        scheduleAdaptiveUpdate(graphDiv, d);
 
         if (shinyMode) {
           Shiny.onInputChange(
@@ -690,6 +1250,8 @@ HTMLWidgets.widget({
     // Function to complete rendering after all data is decoded
     function completeRender() {
       var isFirstRender = !instance.plotly;
+      // A re-render replaces the traces: replies for the old ones are stale
+      graphDiv._adaptSeq = (graphDiv._adaptSeq || 0) + 1;
 
       // The vendored bundle (2.x) still auto-converts a bare string
       // colorbar.title into {text: ...} internally, so this is a no-op
@@ -705,6 +1267,8 @@ HTMLWidgets.widget({
 
       // Use Plotly.react for subsequent renders to avoid full DOM teardown/rebuild,
       // which eliminates the peak memory spike from old + new graph coexisting.
+      lazyInit(x.data);
+      lodInit(x.data, x.layout, graphDiv);
       var renderFn = isFirstRender ? Plotly.newPlot : Plotly.react;
 
       renderFn(graphDiv, x.data, x.layout, x.config).then(function() {
@@ -715,7 +1279,11 @@ HTMLWidgets.widget({
         // Plotly has already deep-copied z into _fullData/calcdata, so the
         // iheatmapr copy is no longer needed. This frees ~13-40 MB at 6500x250.
         for (var i = 0; i < x.data.length; i++) {
-          if (x.data[i]._z_float32) {
+          // Row-major z rows are views of _z_float32, so releasing them frees
+          // nothing. Any later relayout that carries annotations (label
+          // re-thinning) rebuilds the trace from gd.data and would blank the
+          // heatmap, so z is only released when no label group is thinned.
+          if (x.data[i]._z_float32 && !x.data[i]._z_rowmajor && !graphDiv._fullLabels) {
             x.data[i].z = null;
           }
         }
@@ -744,6 +1312,9 @@ HTMLWidgets.widget({
           setupEventHandlers();
         }
 
+        // The layout's initial range may already be zoomed in
+        scheduleAdaptiveUpdate(graphDiv, {});
+
         // Reveal now that the new plot is painted
         graphDiv.classList.remove('iheatmapr-rendering');
       });
@@ -761,9 +1332,10 @@ HTMLWidgets.widget({
 
           // Decode compact dendrograms (now with zlib compression)
           if (hasCompactDendros) {
-            x.layout.shapes = await decodeCompactDendrograms(
-              x.compact_dendrograms,
-              x.layout.shapes
+            // Push in place: instance.currentData aliases x.data
+            Array.prototype.push.apply(
+              x.data,
+              await decodeCompactDendrograms(x.compact_dendrograms)
             );
             delete x.compact_dendrograms;
           }
