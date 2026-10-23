@@ -13,13 +13,13 @@
   groups = NULL,
   clust_dist = stats::dist,
   clust_method = "complete",
-  hclust_fun = NULL,
   colors = NULL,
   show_colorbar = TRUE,
   side = c("top", "bottom"),
   tooltip = setup_tooltip_options(),
   yname = NULL,
-  xname = current_xaxis(p)
+  xname = current_xaxis(p),
+  hclust_fun = NULL
 )
 }
 \arguments{
@@ -41,10 +41,6 @@ clustering
 
 \item{clust_method}{clustering methods passed to `hclust`}
 
-\item{hclust_fun}{optional function taking the matrix (rows = items to
-cluster) and returning an `hclust` object. Overrides `clust_dist` and
-`clust_method`; see \code{\link{fast_hclust}} for a low-memory option.}
-
 \item{colors}{colors to use for annotation of grouping, can be RColorBrewer 
 palette name or
 vector of colors}
@@ -57,6 +53,10 @@ membership}
 \item{yname}{name of yaxis}
 
 \item{xname}{name of xaxis}
+
+\item{hclust_fun}{optional function taking the matrix (rows = items to
+cluster) and returning an `hclust` object. Overrides `clust_dist` and
+`clust_method`; see \code{\link{fast_hclust}} for a low-memory option.}
 }
 \value{
 \code{\link{Iheatmap-class}} object, which can be printed to generate 

@@ -195,6 +195,14 @@ lazy_session <- function() {
   shiny::getDefaultReactiveDomain()
 }
 
+# Run `expr` with lazy windows off: exported files must carry the data, not a
+# URL into the session that built them.
+without_lazy_windows <- function(expr) {
+  old <- options(iheatmapr.lazy_windows = FALSE)
+  on.exit(options(old))
+  expr
+}
+
 # Send only a binned overview inline and let the browser fetch full-resolution
 # windows over HTTP as raw bytes, instead of embedding the whole matrix.
 lazy_window_trace <- function(trace, session, index) {
@@ -461,7 +469,7 @@ to_plotly_list <- function(p){
 #' hm_json <- iheatmap(mat) %>% to_plotly_json()
 #' hm_list <- iheatmap(mat) %>% to_plotly_list()
 to_plotly_json <- function(p){
-  as_list <- to_plotly_list(p)
+  as_list <- without_lazy_windows(to_plotly_list(p))
   as_json <- attr(as_list, "TOJSON_FUNC")(as_list)
   as_json
 }
@@ -576,13 +584,13 @@ setMethod(save_iheatmap, c("Iheatmap","character"),
               stop("File type ", fileType, " not supported", call. = FALSE)
             }          
             if (fileType == "html"){
-              saveWidget(to_widget(p), filename, ...)
+              saveWidget(without_lazy_windows(to_widget(p)), filename, ...)
             } else{
               if (!requireNamespace("webshot",quietly = TRUE))
                 stop('Please install the webshot package for saving static plot')
               f <- basename(tempfile('iheatmapr', '.', '.html'))
               on.exit(unlink(f), add = TRUE)
-              html <- saveWidget(to_widget(p), f, selfcontained = TRUE)
+              html <- saveWidget(without_lazy_windows(to_widget(p)), f, selfcontained = TRUE)
               webshot::webshot(f, filename, ...)
             }
           })

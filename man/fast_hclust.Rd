@@ -56,7 +56,7 @@ offered. Both return an `hclust` object with one leaf per row.
 The approximations need a matrix without NA. With fewer distinct rows than
 `ncenters`, k-means uses one center per distinct row.
 
-With `approx = "none"` and Euclidean distance, Ward, centroid or median
-linkage use `fastcluster::hclust.vector` (O(n) memory); other combinations
-use `stats::dist` and `hclust`.
+With `approx = "none"`, Euclidean distance and `ward.D2` linkage use
+`fastcluster::hclust.vector` (O(n) memory); other combinations use
+`stats::dist` and `hclust`.
 }

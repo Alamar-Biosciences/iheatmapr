@@ -683,8 +683,11 @@ function axisPxEstimate(graphDiv, layoutOrFull, axisKey) {
   var ax = layoutOrFull && layoutOrFull[axisKey];
   var dom = ax && ax.domain;
   var span = dom ? Math.abs(dom[1] - dom[0]) : 1;
-  var w = (layoutOrFull && layoutOrFull.width) || graphDiv.clientWidth || 800;
-  return span * w;
+  var isY = /^y/.test(axisKey);
+  var size = isY
+    ? (layoutOrFull && layoutOrFull.height) || graphDiv.clientHeight || 800
+    : (layoutOrFull && layoutOrFull.width) || graphDiv.clientWidth || 800;
+  return span * size;
 }
 
 function rethinned(graphDiv, layoutOrFull, d) {
@@ -740,6 +743,8 @@ function labelsUpdateFor(graphDiv, d) {
       touched = true;
     }
   });
+  // A resize changes the axis length, and with it how many labels fit
+  if (full && (d.width !== undefined || d.height !== undefined)) touched = true;
   if (!touched) return null;
   if (full) update.annotations = full.others.concat(rethinned(graphDiv, graphDiv._fullLayout, d2));
   return update;
@@ -984,12 +989,12 @@ function applyAdaptiveUpdates(graphDiv, d) {
       if (m) overrides[m[1]] = layoutUpdate[k];
     });
   }
-  var changes = lodChangesFor(graphDiv, overrides);
-  if (!layoutUpdate && !changes.length) return;
+  var wanted = lodChangesFor(graphDiv, overrides);
+  if (!layoutUpdate && !wanted.length) return;
 
   // Windows may need a server round trip; a newer pass supersedes this one
-  var windows = changes.map(function(c) { return lodWindow(graphDiv.data[c.idx], c.d); });
-  var apply = function(rowsList) {
+  var windows = wanted.map(function(c) { return lodWindow(graphDiv.data[c.idx], c.d); });
+  var apply = function(rowsList, changes) {
     if (seq !== graphDiv._adaptSeq) return;
     var dataUpdate = { z: [], x0: [], dx: [], y0: [], dy: [] };
     var indices = [];
@@ -1011,9 +1016,19 @@ function applyAdaptiveUpdates(graphDiv, d) {
     Plotly.update(graphDiv, indices.length ? dataUpdate : {}, layoutUpdate || {},
                   indices.length ? indices : undefined).then(done, done);
   };
-  Promise.all(windows).then(apply, function(err) {
-    console.warn('iheatmapr: keeping the current heatmap detail.', err);
-    apply(null);  // labels still follow the view
+  Promise.all(windows).then(function(rowsList) { apply(rowsList, wanted); }, function(err) {
+    console.warn('iheatmapr: window fetch failed, drawing the overview.', err);
+    // The labels follow the new view, so the cells must too: the cached
+    // overview covers the whole matrix, the old window may not cover this view
+    var fb = wanted.map(function(c, k) {
+      var tr = graphDiv.data[c.idx];
+      if (!tr._lazy) return { c: c, rows: windows[k] };
+      var nr = tr._z_dims[0], nc = tr._z_dims[1], ov = tr._lazy.ov;
+      return { c: { idx: c.idx, d: { r0: 0, r1: nr, c0: 0, c1: nc, fr: ov.fr, fc: ov.fc,
+                                     visR0: 0, visR1: nr, visC0: 0, visC1: nc } },
+               rows: ov.rows };
+    });
+    apply(fb.map(function(f) { return f.rows; }), fb.map(function(f) { return f.c; }));
   });
 }
 
@@ -1125,6 +1140,8 @@ HTMLWidgets.widget({
             var src = lodCell(tr, pt.pointNumber[0], pt.pointNumber[1]);
             obj.x = src.col + 1;
             obj.y = src.row + 1;
+            // z is the bin mean, not the value of the cell at (x, y)
+            if (src.n > 1) obj.bin = { rows: tr._lod.fr, cols: tr._lod.fc };
           }
           // add on additional trace info, if it exists
           var attachKey = function(keyName) {

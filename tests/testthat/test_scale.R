@@ -369,3 +369,28 @@ test_that("approximate fast_hclust stops clearly when every row is identical", {
   expect_error(fast_hclust(matrix(1, 2500, 5), approx = "kmeans", ncenters = 2000),
                "at least 2 distinct rows")
 })
+
+test_that("exports stay self-contained under a reactive domain with lazy windows on", {
+  skip_if_not_installed("shiny")
+  session <- list(registerDataObj = function(name, data, filterFunc) "session/tok/dataobj/x?w=1")
+  old <- options(iheatmapr.lazy_windows = TRUE, iheatmapr.lazy_threshold = 1e3)
+  on.exit(options(old))
+  hm <- main_heatmap(matrix(rnorm(60 * 60), 60, 60))
+  json <- shiny::withReactiveDomain(session, to_plotly_json(hm))
+  expect_false(grepl("lazy_window", json, fixed = TRUE))
+  expect_true(isTRUE(getOption("iheatmapr.lazy_windows")))
+})
+
+test_that("add_row_clustering keeps its 0.4.10 positional arguments", {
+  set.seed(1)
+  hm <- main_heatmap(matrix(rnorm(60), 6, 10))
+  out <- add_row_clustering(hm, "hclust", "Rows", 3, NULL, stats::dist, "complete", "Set1")
+  expect_s4_class(out, "Iheatmap")
+})
+
+test_that("fast_hclust(approx = 'none') matches stats::hclust for centroid linkage", {
+  set.seed(1)
+  x <- matrix(rnorm(400 * 4), 400, 4)
+  expect_equal(fast_hclust(x, method = "centroid")$merge,
+               stats::hclust(stats::dist(x), method = "centroid")$merge)
+})

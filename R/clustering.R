@@ -46,13 +46,13 @@ setMethod(add_row_clustering,
                    groups = NULL,
                    clust_dist = stats::dist,
                    clust_method = 'complete',
-                   hclust_fun = NULL,
                    colors = NULL,
                    show_colorbar = TRUE,
                    side = c("left","right"),
                    tooltip = setup_tooltip_options(),
                    xname = NULL,
-                   yname = current_yaxis(p)){
+                   yname = current_yaxis(p),
+                   hclust_fun = NULL){
             
             method <- match.arg(method)
             side <- match.arg(side)
@@ -154,13 +154,13 @@ setMethod(add_col_clustering,
                    groups = NULL,
                    clust_dist = stats::dist,
                    clust_method = 'complete',
-                   hclust_fun = NULL,
                    colors = NULL,
                    show_colorbar = TRUE,
                    side = c("top","bottom"),
                    tooltip = setup_tooltip_options(),
                    yname = NULL,
-                   xname = current_xaxis(p)){
+                   xname = current_xaxis(p),
+                   hclust_fun = NULL){
             
             method <- match.arg(method)
             side <- match.arg(side)
@@ -235,9 +235,9 @@ setMethod(add_col_clustering,
 #' The approximations need a matrix without NA. With fewer distinct rows than
 #' `ncenters`, k-means uses one center per distinct row.
 #'
-#' With `approx = "none"` and Euclidean distance, Ward, centroid or median
-#' linkage use `fastcluster::hclust.vector` (O(n) memory); other combinations
-#' use `stats::dist` and `hclust`.
+#' With `approx = "none"`, Euclidean distance and `ward.D2` linkage use
+#' `fastcluster::hclust.vector` (O(n) memory); other combinations use
+#' `stats::dist` and `hclust`.
 #'
 #' @param x numeric matrix, one item to cluster per row
 #' @param method linkage method, as in `stats::hclust`
@@ -288,7 +288,9 @@ with_local_seed <- function(seed, expr) {
 }
 
 exact_hclust <- function(x, method, dist_method) {
-  vector_methods <- c(ward.D2 = "ward", centroid = "centroid", median = "median")
+  # centroid and median in hclust.vector work on squared distances, so they
+  # differ from stats::hclust; only ward.D2 matches
+  vector_methods <- c(ward.D2 = "ward")
   # hclust.vector cannot see NA; dist() rescales over the non-missing pairs
   if (dist_method == "euclidean" && method %in% names(vector_methods) && !anyNA(x) &&
       requireNamespace("fastcluster", quietly = TRUE)) {
